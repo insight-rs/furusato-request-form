@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+pytest_temp_*/
+work/
+downloads/
+exports/
+profiles/
+*.log
+config/google-service-account.json
+config/gmail-oauth-client.json
+config/gmail-token.json
+config/credential-spreadsheet-id.txt
+config/client_secret*.json
+config/token*.json
+.streamlit/secrets.toml
