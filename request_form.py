@@ -70,6 +70,8 @@ TEMPERATURE_COLUMNS = {
     "冷蔵": "（必須）冷蔵配送",
     "冷凍": "（必須）冷凍配送",
 }
+TEMPERATURE_CHANGE_OPTION = "温度帯"
+ALLERGY_CHANGE_OPTION = "アレルギー情報"
 NEW_PRODUCT_REQUIRED_COLUMNS = {
     "管理コード",
     "（必須）お礼の品名", "（必須）発送期日種別", "（必須）カテゴリー",
@@ -545,7 +547,7 @@ def _build_product_change_lines(
     fields_for_input: list[RequestFormField],
     edited_values: pd.DataFrame,
     form_fields: list[RequestFormField],
-    image_instruction: str,
+    image_instruction: str | dict[int, str],
 ) -> tuple[list[ProductCorrectionLine], list[str]]:
     """編集表の変更後値を、商品ごとの修正明細へ変換する。"""
 
@@ -557,6 +559,11 @@ def _build_product_change_lines(
     waste_field = find_request_form_field(form_fields, WASTE_FLAG_COLUMN)
 
     for row_index, product in enumerate(products):
+        product_image_instruction = (
+            image_instruction.get(row_index, "")
+            if isinstance(image_instruction, dict)
+            else image_instruction
+        )
         row = edited_values.iloc[row_index]
         after_by_field = {
             field.field_id: _normalize_editor_value(
@@ -636,7 +643,7 @@ def _build_product_change_lines(
                 field_name=field.source_column,
                 before_value=before_value,
                 after_value=after_value,
-                image_instruction=image_instruction.strip() if not product_lines else "",
+                image_instruction=product_image_instruction.strip() if not product_lines else "",
                 column_number=product.source_column_number(field.source_column),
                 display_name=field.label,
             ))
@@ -679,19 +686,23 @@ def _render_temperature_editor(
     rows = []
     for product_index, product in enumerate(products):
         source_values = product.source_values()
+        management_code = source_values.get("管理コード", "") or product.product_id
         current = [
             label for label, column in TEMPERATURE_COLUMNS.items()
             if source_values.get(column, "") == "1"
         ]
-        st.caption(
-            "現在の温度帯：" + ("・".join(current) if current else "未設定")
-        )
-        selected = st.pills(
-            "温度帯（必須・複数選択可）",
-            options=list(TEMPERATURE_COLUMNS),
-            selection_mode="multi",
-            key=f"{editor_key}_{product_index}",
-        )
+        with st.container(border=True):
+            st.markdown(f"#### 品番：{management_code}")
+            st.write(f"商品名：{product.product_name or '未設定'}")
+            st.caption(
+                "現在の温度帯：" + ("・".join(current) if current else "未設定")
+            )
+            selected = st.pills(
+                "温度帯（必須・複数選択可）",
+                options=list(TEMPERATURE_COLUMNS),
+                selection_mode="multi",
+                key=f"{editor_key}_{product_index}",
+            )
         rows.append({"温度帯": selected})
     return pd.DataFrame(rows)
 
@@ -1262,14 +1273,26 @@ def render_product_request_tab(
                 help="修正内容に応じて必要な入力項目を自動表示します。",
             )
             if correction_type == "複合的な修正":
-                selected_optional_fields = st.multiselect(
+                change_options: list[RequestFormField | str] = [
+                    *selectable_fields,
+                    TEMPERATURE_CHANGE_OPTION,
+                    ALLERGY_CHANGE_OPTION,
+                ]
+                selected_change_options = st.multiselect(
                     "変更する項目",
-                    options=selectable_fields,
-                    format_func=lambda field: field.label,
+                    options=change_options,
+                    format_func=lambda option: (
+                        option.label if isinstance(option, RequestFormField) else option
+                    ),
                     placeholder="変更する項目を選択してください",
                     key="request_selected_form_fields",
                 )
+                selected_optional_fields = [
+                    option for option in selected_change_options
+                    if isinstance(option, RequestFormField)
+                ]
             else:
+                selected_change_options = []
                 target_columns = CORRECTION_TYPE_COLUMNS[correction_type]
                 selected_optional_fields = [
                     field for field in visible_fields
@@ -1284,11 +1307,8 @@ def render_product_request_tab(
                 + selected_optional_fields
             ))
         temperature_change_requested = is_new_product or (
-            correction_type == "複合的な修正" and st.checkbox(
-            "温度帯を変更する",
-            key="request_temperature_change_requested",
-            help="常温・冷蔵・冷凍から一つ以上選択します。",
-            )
+            correction_type == "複合的な修正"
+            and TEMPERATURE_CHANGE_OPTION in selected_change_options
         )
         allergy_fields = [
             field for field in selectable_request_form_fields(form_fields)
@@ -1296,11 +1316,8 @@ def render_product_request_tab(
         ]
         allergy_note_field = find_request_form_field(form_fields, ALLERGY_NOTE_COLUMN)
         allergy_change_requested = is_new_product or (
-            correction_type == "複合的な修正" and st.checkbox(
-            "アレルギー情報を変更する",
-            key="request_allergy_change_requested",
-            help="商品ごとに、含むアレルギー品目だけをチェックして変更します。",
-            )
+            correction_type == "複合的な修正"
+            and ALLERGY_CHANGE_OPTION in selected_change_options
         )
         backlog_only_type = (
             not is_new_product
@@ -1417,11 +1434,17 @@ def render_product_request_tab(
                         allergy_note_field,
                         editor_key=f"allergy_change_editor_{editor_context}",
                     )
-                image_instruction = st.text_area(
-                    "画像修正の指示（任意）",
-                    placeholder="画像子課題を作成する場合の指示を入力してください。",
-                    key="request_image_instruction",
-                )
+                image_instruction: dict[int, str] = {}
+                with st.expander("画像修正指示（任意・商品別）"):
+                    st.caption(
+                        "画像修正が必要な商品だけ入力してください。入力した商品をまとめて画像子課題にします。"
+                    )
+                    for product_index, product in enumerate(selected_products):
+                        image_instruction[product_index] = st.text_area(
+                            f"{_product_label(product)} の画像修正指示",
+                            placeholder="例：1枚目を添付画像へ差し替え。背景を白に統一。",
+                            key=f"request_image_instruction_{editor_context}_{product_index}",
+                        )
                 add_lines = st.button(
                     "選択した変更を明細に追加",
                     type="secondary",
@@ -1527,6 +1550,29 @@ def render_product_request_tab(
                         allergy_note_field=allergy_note_field,
                         edited_values=edited_allergy_values,
                     ))
+                for product_index, product in enumerate(selected_products):
+                    instruction = image_instruction.get(product_index, "").strip()
+                    if not instruction:
+                        continue
+                    matching_indexes = [
+                        index for index, line in enumerate(new_lines)
+                        if line.product.product_id == product.product_id
+                        and line.product.municipality_id == product.municipality_id
+                    ]
+                    if matching_indexes:
+                        target_index = matching_indexes[0]
+                        new_lines[target_index] = replace(
+                            new_lines[target_index], image_instruction=instruction
+                        )
+                    else:
+                        new_lines.append(ProductCorrectionLine(
+                            product=product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}画像修正",
+                            before_value="",
+                            after_value="画像修正あり",
+                            image_instruction=instruction,
+                            display_name="画像修正（Backlogのみ）",
+                        ))
                 if input_errors:
                     st.error("必須項目を入力してください: " + " / ".join(input_errors))
                 elif correction_lines and any(
@@ -1612,6 +1658,7 @@ def render_product_request_tab(
     backlog_assignee_name = ""
     backlog_assignee_id = ""
     target_custom_fields = []
+    target_project_users = []
     requester = ""
     if create_backlog_issue and selected_issue_type is not None:
         try:
@@ -1711,6 +1758,85 @@ def render_product_request_tab(
                 custom_field, field_key
             )
 
+    image_child_assignee_id = ""
+    image_child_priority_id = backlog_priority_id
+    image_child_start_date = None
+    image_child_due_date = None
+    image_child_custom_fields = []
+    image_child_custom_values = {}
+    has_image_request = any(line.image_instruction.strip() for line in correction_lines)
+    if create_backlog_issue and has_image_request and issue_type_names:
+        st.divider()
+        with st.container(border=True):
+            st.subheader("画像子課題情報")
+            st.caption("画像修正がある場合だけ使用します。親課題とは別に担当者・課題種別・基本項目を設定できます。")
+            configured_child_name = (
+                target_image_issue_type.name if target_image_issue_type is not None else ""
+            )
+            child_type_index = (
+                issue_type_names.index(configured_child_name)
+                if configured_child_name in issue_type_names else 0
+            )
+            image_child_issue_type_name = st.selectbox(
+                "子課題の課題種別",
+                options=issue_type_names,
+                index=child_type_index,
+                key=f"image_child_issue_type_{target_municipality_id}",
+            )
+            target_image_issue_type = issue_type_by_name[image_child_issue_type_name]
+            if target_project_users:
+                child_assignee = st.selectbox(
+                    "子課題の担当者（任意）",
+                    options=[None] + target_project_users,
+                    format_func=lambda user: "未指定" if user is None else user.display_name,
+                    key=f"image_child_assignee_{target_municipality_id}",
+                )
+                if child_assignee is not None:
+                    image_child_assignee_id = child_assignee.user_id
+            child_priority_label = st.selectbox(
+                "子課題の優先度",
+                options=list(priority_options),
+                index=1,
+                key=f"image_child_priority_{target_municipality_id}",
+            )
+            image_child_priority_id = priority_options[child_priority_label]
+            child_start_column, child_due_column = st.columns(2)
+            with child_start_column:
+                image_child_start_date = st.date_input(
+                    "子課題の開始日（任意）",
+                    value=None,
+                    format="YYYY-MM-DD",
+                    key=f"image_child_start_date_{target_municipality_id}",
+                )
+            with child_due_column:
+                image_child_due_date = st.date_input(
+                    "子課題の期限日（任意）",
+                    value=None,
+                    format="YYYY-MM-DD",
+                    key=f"image_child_due_date_{target_municipality_id}",
+                )
+            try:
+                image_child_custom_fields = get_applicable_custom_fields(
+                    _load_backlog_custom_fields(
+                        config_spreadsheet_id, str(credentials_path)
+                    ),
+                    target_municipality_id,
+                    target_image_issue_type.name,
+                    required_only=False,
+                )
+            except Exception:
+                st.warning("画像子課題のカスタム属性を読み込めません。")
+            if image_child_custom_fields:
+                st.caption("画像子課題のカスタム属性")
+                for custom_field in image_child_custom_fields:
+                    field_key = (
+                        f"image_child_custom_{target_municipality_id}_"
+                        f"{target_image_issue_type.issue_type_id}_{custom_field.field_id}"
+                    )
+                    image_child_custom_values[custom_field.name] = _render_backlog_custom_field(
+                        custom_field, field_key
+                    )
+
     if st.button("依頼を保存", type="primary", width="stretch"):
         try:
             if selected_issue_type is None or target_backlog_config is None:
@@ -1725,8 +1851,16 @@ def render_product_request_tab(
                 raise ValueError("施策種別と具体内容を選択してください。")
             if backlog_start_date and backlog_due_date and backlog_start_date > backlog_due_date:
                 raise ValueError("期限日は開始日以降を指定してください。")
+            if (
+                image_child_start_date and image_child_due_date
+                and image_child_start_date > image_child_due_date
+            ):
+                raise ValueError("画像子課題の期限日は開始日以降を指定してください。")
             custom_field_parameters = build_custom_field_parameters(
                 target_custom_fields, custom_field_values
+            )
+            image_child_custom_parameters = build_custom_field_parameters(
+                image_child_custom_fields, image_child_custom_values
             )
             editing_source_request_id = str(
                 st.session_state.get("editing_source_request_id", "")
@@ -1893,9 +2027,12 @@ def render_product_request_tab(
                         issue_type_id=target_image_issue_type.issue_type_id,
                         summary=child_summary,
                         description=child_description,
+                        priority_id=image_child_priority_id,
+                        start_date=image_child_start_date,
+                        due_date=image_child_due_date,
                         parent_issue_id=issue.issue_id,
-                        assignee_id=backlog_assignee_id,
-                        custom_field_parameters=custom_field_parameters,
+                        assignee_id=image_child_assignee_id,
+                        custom_field_parameters=image_child_custom_parameters,
                     )
                     for image_request_id in result.image_request_ids:
                         update_image_request_backlog_child(

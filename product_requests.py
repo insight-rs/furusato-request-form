@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import gspread
 
 from config_master import ConfigError, normalize
+from form_definitions import CODED_OPTIONS
 
 
 ALL_PRODUCTS_SHEET_NAME = "全自治体マスタ"
@@ -18,6 +19,47 @@ REQUEST_DETAIL_SHEET_NAME = "商品修正依頼明細"
 IMAGE_REQUEST_SHEET_NAME = "画像修正依頼"
 PRODUCT_COLUMN_DEFINITION_SHEET_NAME = "商品マスタ列定義"
 JST = ZoneInfo("Asia/Tokyo")
+
+
+def _coded_labels(options_text: str) -> dict[str, str]:
+    labels = {}
+    for option in options_text.split("|"):
+        label, separator, code = option.partition("=")
+        if separator:
+            labels[normalize(code)] = normalize(label)
+    return labels
+
+
+def _backlog_display_value(field_name: str, value: object) -> str:
+    """Backlog本文では保存コードではなく利用者向けの日本語を表示する。"""
+
+    text = normalize(value)
+    if not text:
+        return "（未設定）"
+    if field_name.startswith("アレルギー："):
+        return {"1": "あり", "2": "なし", "3": "未確認"}.get(text, text)
+    if field_name in {
+        "（必須）常温配送", "（必須）冷蔵配送", "（必須）冷凍配送"
+    }:
+        return {"1": "対象", "0": "対象外"}.get(text, text)
+    labels = _coded_labels(CODED_OPTIONS.get(field_name, ""))
+    if "," in text:
+        return "、".join(labels.get(part.strip(), part.strip()) for part in text.split(","))
+    return labels.get(text, text)
+
+
+def _backlog_change_section(field_name: str) -> str:
+    if field_name.startswith("アレルギー：") or field_name == "アレルギー特記事項":
+        return "アレルギー情報"
+    if any(word in field_name for word in ("配送", "発送", "配達")):
+        return "配送情報"
+    if any(word in field_name for word in ("表示", "受付")):
+        return "公開・受付設定"
+    if field_name.startswith("Backlogのみ："):
+        return "商品管理情報"
+    if field_name in {"管理コード", "（必須）お礼の品名", "サイト表示事業者名"}:
+        return "基本情報"
+    return "商品詳細"
 
 
 @dataclass(frozen=True)
@@ -326,24 +368,29 @@ def build_backlog_issue_content(
         for line in validated_lines:
             key = (line.product.municipality_id, line.product.product_id)
             lines_by_product.setdefault(key, []).append(line)
-        for product_lines in lines_by_product.values():
+        for product_number, product_lines in enumerate(lines_by_product.values(), start=1):
             product = product_lines[0].product
             management_code = normalize(product.source_values().get("管理コード"))
             description_lines.extend([
                 "",
-                f"■ 品番：{management_code or product.product_id or '未設定'}",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"■ 商品{product_number}｜品番：{management_code or product.product_id or '未設定'}",
                 f"商品名：{product.product_name or '未設定'}",
             ])
             if product.business_name:
                 description_lines.append(f"事業者：{product.business_name}")
             image_instructions = []
+            previous_section = ""
             for line in product_lines:
                 field_label = normalize(line.display_name) or normalize(line.field_name)
+                section = _backlog_change_section(line.field_name)
+                if section != previous_section:
+                    description_lines.extend(["", f"【{section}】"])
+                    previous_section = section
                 description_lines.extend([
-                    "",
-                    field_label,
-                    f"現状：{normalize(line.before_value) or '（未設定）'}",
-                    f"更新後：{normalize(line.after_value) or '（未設定）'}",
+                    f"・{field_label}",
+                    f"  現状：{_backlog_display_value(line.field_name, line.before_value)}",
+                    f"  更新後：{_backlog_display_value(line.field_name, line.after_value)}",
                 ])
                 if normalize(line.instruction):
                     description_lines.append(f"補足：{normalize(line.instruction)}")
@@ -376,7 +423,25 @@ def build_image_backlog_issue_content(
             (line.product.municipality_id, line.product.product_id), []
         ).append(line)
 
-    summary = f"【画像修正】{request.municipality_name} {len(products)}商品"
+    unique_businesses = list(dict.fromkeys(
+        normalize(lines[0].product.business_name) or "事業者未設定"
+        for lines in products.values()
+    ))
+    product_codes = []
+    for product_lines in products.values():
+        product = product_lines[0].product
+        product_codes.append(
+            normalize(product.source_values().get("管理コード"))
+            or normalize(product.product_id)
+            or "品番未設定"
+        )
+    business_label = "・".join(unique_businesses[:2])
+    if len(unique_businesses) > 2:
+        business_label += f"ほか{len(unique_businesses) - 2}事業者"
+    code_label = "・".join(product_codes[:3])
+    if len(product_codes) > 3:
+        code_label += f"ほか{len(product_codes) - 3}品番"
+    summary = f"【画像修正】{business_label}｜{code_label}｜{len(products)}商品"
     description_lines = [f"親依頼ID: {request.request_id}"]
     for product_lines in products.values():
         product = product_lines[0].product
