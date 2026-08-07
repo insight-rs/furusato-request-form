@@ -30,6 +30,8 @@ class BacklogConfig:
     image_child_issue_type: str
     product_correction_issue_type: str
     note: str
+    product_code_assignee_id: str = ""
+    product_code_notified_user_ids: tuple[str, ...] = ()
 
 
 def _required(row: dict, field: str, label: str) -> str:
@@ -55,6 +57,10 @@ def build_backlog_configs(rows: list[dict]) -> list[BacklogConfig]:
             raise ConfigError(f"自治体ID {municipality_id} が重複しています。")
         seen_ids.add(municipality_id)
 
+        notified_ids = tuple(
+            value.strip() for value in normalize(row.get("品番通知先ユーザーID")).split("|")
+            if value.strip()
+        )
         configs.append(BacklogConfig(
             municipality_id=municipality_id,
             municipality_name=_required(row, "自治体名", municipality_id),
@@ -66,6 +72,8 @@ def build_backlog_configs(rows: list[dict]) -> list[BacklogConfig]:
             image_child_issue_type=normalize(row.get("画像子課題種別")),
             product_correction_issue_type=normalize(row.get("商品修正親課題種別")),
             note=normalize(row.get("備考")),
+            product_code_assignee_id=normalize(row.get("品番担当者ユーザーID")),
+            product_code_notified_user_ids=notified_ids,
         ))
 
     return configs

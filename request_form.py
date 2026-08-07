@@ -113,6 +113,7 @@ HIDDEN_FORM_COLUMNS = {
     "（条件付き必須）還元率（%）", "（必須）還元率入力有無", "登録年度", "メモ",
 }
 STATIC_FIXED_VALUES = {
+    "（必須）別送対応": "1",
     "（必須）包装対応": "0",
     "（必須）のし対応": "0",
     "（必須）ポイント情報表示有無": "1",
@@ -1311,6 +1312,10 @@ def render_product_request_tab(
     preferred_issue_type_name = ""
     if selected_policy is not None:
         preferred_issue_type_name = selected_policy.recommended_issue_type
+    elif is_new_product and "新商品登録" in issue_type_names:
+        preferred_issue_type_name = "新商品登録"
+    elif is_new_product and "新規商品登録" in issue_type_names:
+        preferred_issue_type_name = "新規商品登録"
     elif target_backlog_config is not None:
         preferred_issue_type_name = target_backlog_config.product_correction_issue_type
 
@@ -1377,6 +1382,12 @@ def render_product_request_tab(
             or bool(field.fixed_value)
         ]
         if is_new_product:
+            new_product_code_method = st.segmented_control(
+                "品番の用意方法（必須）",
+                ["品番を入力する", "品番取得を依頼する"],
+                default="品番を入力する",
+                key="new_product_code_method",
+            )
             business_fields = []
             business_name_field = find_request_form_field(form_fields, "サイト表示事業者名")
             if business_name_field is not None:
@@ -1388,7 +1399,18 @@ def render_product_request_tab(
             selected_fields = [
                 field for field in visible_fields
                 if field.source_column not in business_columns
+                and field.source_column not in {
+                    "（必須）定期配送対応", "（必須）別送対応", "（必須）表示有無"
+                }
+                and not (
+                    field.source_column == MANAGEMENT_CODE_COLUMN
+                    and new_product_code_method == "品番取得を依頼する"
+                )
             ] + business_fields
+            if new_product_code_method == "品番を入力する":
+                management_field = find_request_form_field(form_fields, MANAGEMENT_CODE_COLUMN)
+                if management_field is not None and management_field not in selected_fields:
+                    selected_fields.insert(0, management_field)
             st.caption(
                 f"画像・動画・サイト自動取得項目を除く {len(selected_fields)}項目を、"
                 "チョイスマスタ順にすべて入力してください。"
@@ -1401,8 +1423,14 @@ def render_product_request_tab(
                 help="修正内容に応じて必要な入力項目を自動表示します。",
             )
             if correction_type == "複合的な修正":
+                st.caption("2項目以上をまとめて修正する場合はこちらを選択してください。")
                 change_options: list[RequestFormField | str] = [
-                    *selectable_fields,
+                    *[
+                        field for field in selectable_fields
+                        if field.source_column not in {
+                            "（必須）定期配送対応", "（必須）別送対応", "（必須）表示有無"
+                        }
+                    ],
                     TEMPERATURE_CHANGE_OPTION,
                     ALLERGY_CHANGE_OPTION,
                 ]
@@ -1533,6 +1561,26 @@ def render_product_request_tab(
                         placeholder="半角数字で入力",
                         key=cost_key,
                     )
+                    shipping_period_mode = st.segmented_control(
+                        "発送可能時期（必須）",
+                        ["通年", "時期指定あり"],
+                        default="通年",
+                        key=f"shipping_period_mode_{editor_context}",
+                    )
+                    shipping_period_from = None
+                    shipping_period_to = None
+                    if shipping_period_mode == "時期指定あり":
+                        period_columns = st.columns(2)
+                        with period_columns[0]:
+                            shipping_period_from = st.date_input(
+                                "発送可能期間FROM", value=None, format="YYYY-MM-DD",
+                                key=f"shipping_period_from_{editor_context}",
+                            )
+                        with period_columns[1]:
+                            shipping_period_to = st.date_input(
+                                "発送可能期間TO", value=None, format="YYYY-MM-DD",
+                                key=f"shipping_period_to_{editor_context}",
+                            )
                     st.subheader("共通追加情報")
                     st.caption(
                         "Nouless要件を参考にした補助情報です。チョイス商品マスタには書き込まず、Backlogと出力Excelへ保存します。"
@@ -1627,9 +1675,9 @@ def render_product_request_tab(
                                     key=f"correction_cost_{editor_context}_{product_index}",
                                 )
                                 code_method = st.segmented_control(
-                                    "新品番",
-                                    options=["新品番を入力", "品番取得を外部依頼"],
-                                    default="新品番を入力",
+                                    "品番の変更方法",
+                                    options=["品番を変更しない", "新品番を入力", "品番取得を外部依頼"],
+                                    default="品番を変更しない",
                                     key=f"correction_code_method_{editor_context}_{product_index}",
                                 )
                                 values["品番取得方法"] = code_method or ""
@@ -1694,6 +1742,32 @@ def render_product_request_tab(
                         image_instruction=image_instruction,
                     )
                     new_lines.extend(product_lines)
+                # 商品タイプ・公開状態など、Excel用の自動設定を補完する。
+                if is_new_product or correction_type == "複合的な修正":
+                    automatic_values = {
+                        "（必須）定期配送対応": "1" if product_shape == "定期便" else "0",
+                        "（必須）別送対応": "1",
+                        "（必須）表示有無": "0",
+                    }
+                    for product in selected_products:
+                        new_lines = [
+                            line for line in new_lines
+                            if not (
+                                line.product.product_id == product.product_id
+                                and line.field_name in automatic_values
+                            )
+                        ]
+                        for column, value in automatic_values.items():
+                            field = find_request_form_field(form_fields, column)
+                            new_lines.append(ProductCorrectionLine(
+                                product=product,
+                                field_name=column,
+                                before_value=product.source_values().get(column, ""),
+                                after_value=value,
+                                instruction="【自動設定】",
+                                column_number=product.source_column_number(column),
+                                display_name=field.label if field else column,
+                            ))
                 if is_new_product:
                     if stock_quantity != "無制限" and not _is_nonnegative_integer(stock_quantity):
                         input_errors.append("新規商品: 在庫数")
@@ -1702,6 +1776,33 @@ def render_product_request_tab(
                     registration_product = (
                         new_lines[0].product if new_lines else selected_products[0]
                     )
+                    if new_product_code_method == "品番取得を依頼する":
+                        new_lines.append(ProductCorrectionLine(
+                            product=registration_product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}品番取得依頼",
+                            before_value="",
+                            after_value="品番取得を依頼",
+                            display_name="品番取得依頼（Backlogのみ）",
+                        ))
+                    if shipping_period_mode == "時期指定あり":
+                        if not shipping_period_from or not shipping_period_to:
+                            input_errors.append("新規商品: 発送可能期間FROM・TO")
+                        elif shipping_period_from > shipping_period_to:
+                            input_errors.append("新規商品: 発送可能期間の前後関係")
+                        shipping_period_value = (
+                            f"{shipping_period_from.isoformat()}～{shipping_period_to.isoformat()}"
+                            if shipping_period_from and shipping_period_to else ""
+                        )
+                    else:
+                        shipping_period_value = "通年"
+                    if shipping_period_value:
+                        new_lines.append(ProductCorrectionLine(
+                            product=registration_product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}発送可能時期",
+                            before_value="",
+                            after_value=shipping_period_value,
+                            display_name="発送可能時期（Backlogのみ）",
+                        ))
                     new_lines.append(ProductCorrectionLine(
                         product=registration_product,
                         field_name=f"{BACKLOG_ONLY_PREFIX}商品形態",
@@ -1811,7 +1912,7 @@ def render_product_request_tab(
                                     after_value="外部へ新品番の取得を依頼",
                                     display_name="品番取得依頼（Backlogのみ）",
                                 ))
-                            else:
+                            elif code_method == "新品番を入力":
                                 new_code = values.get("新品番", "").strip()
                                 if not new_code:
                                     input_errors.append(f"{_product_label(product)}: 新品番")
@@ -1994,6 +2095,7 @@ def render_product_request_tab(
     st.subheader("依頼内容と担当")
     backlog_assignee_name = ""
     backlog_assignee_id = ""
+    backlog_notified_user_ids: list[str] = []
     target_custom_fields = []
     target_project_users = []
     requester = ""
@@ -2023,6 +2125,43 @@ def render_product_request_tab(
             if assignee_user is not None:
                 backlog_assignee_name = assignee_user.name
                 backlog_assignee_id = assignee_user.user_id
+            code_action_required = any(
+                line.field_name == MANAGEMENT_CODE_COLUMN
+                or line.field_name.endswith("品番取得依頼")
+                for line in correction_lines
+            )
+            forced_assignee_id = (
+                target_backlog_config.product_code_assignee_id
+                if code_action_required and target_backlog_config else ""
+            )
+            if forced_assignee_id:
+                forced_assignee = next(
+                    (user for user in target_project_users if user.user_id == forced_assignee_id),
+                    None,
+                )
+                backlog_assignee_id = forced_assignee_id
+                backlog_assignee_name = forced_assignee.name if forced_assignee else backlog_assignee_name
+                st.info(
+                    "品番取得・変更があるため、自治体マスタの品番担当者を自動設定します。"
+                )
+            forced_notification_ids = set(
+                target_backlog_config.product_code_notified_user_ids
+                if code_action_required and target_backlog_config else ()
+            )
+            notification_users = st.multiselect(
+                "Backlog通知先（任意）",
+                options=target_project_users,
+                default=[
+                    user for user in target_project_users
+                    if user.user_id in forced_notification_ids
+                ],
+                format_func=lambda user: user.display_name,
+                key=f"notified_users_{target_municipality_id}",
+                help="品番取得・変更時は、自治体マスタの通知先が自動的に追加されます。",
+            )
+            backlog_notified_user_ids = list(dict.fromkeys(
+                [user.user_id for user in notification_users] + list(forced_notification_ids)
+            ))
         else:
             requester = st.text_input("依頼者", key="requester")
         try:
@@ -2043,6 +2182,11 @@ def render_product_request_tab(
         "対応内容・備考",
         placeholder="何を、どのように対応するかを補足してください。",
         key="request_note",
+    )
+    box_url = st.text_input(
+        "BOX URL（任意）",
+        placeholder="画像素材・調書を保存したBOXフォルダのURL",
+        key="request_box_url",
     )
     uploaded_files = st.file_uploader(
         "添付ファイル（任意・複数可）",
@@ -2212,6 +2356,13 @@ def render_product_request_tab(
                 st.session_state.get("editing_source_backlog_issue_key", "")
             ).strip()
             stored_note = request_note
+            if box_url.strip():
+                stored_note = "\n\n".join(
+                    value for value in (
+                        stored_note.strip(),
+                        "【関連ファイル】\nBOX URL：" + box_url.strip(),
+                    ) if value
+                )
             if is_new_product:
                 backlog_values = st.session_state.get("new_product_backlog_values", {})
                 backlog_only_note = "\n".join([
@@ -2220,12 +2371,12 @@ def render_product_request_tab(
                     f"商品代（税込）：{backlog_values.get('商品代（税込）', '')}円",
                 ])
                 stored_note = "\n\n".join(
-                    value for value in (request_note.strip(), backlog_only_note) if value
+                    value for value in (stored_note.strip(), backlog_only_note) if value
                 )
             if editing_source_request_id:
                 revision_marker = f"改訂元依頼ID：{editing_source_request_id}"
                 stored_note = "\n".join(
-                    value for value in (revision_marker, request_note.strip()) if value
+                    value for value in (revision_marker, stored_note.strip()) if value
                 )
             request = create_product_correction_request(
                 requester=requester,
@@ -2283,6 +2434,7 @@ def render_product_request_tab(
                         start_date=backlog_start_date,
                         due_date=backlog_due_date,
                         assignee_id=backlog_assignee_id,
+                        notified_user_ids=backlog_notified_user_ids,
                         custom_field_parameters=custom_field_parameters,
                     )
                 else:
@@ -2295,6 +2447,7 @@ def render_product_request_tab(
                         start_date=backlog_start_date,
                         due_date=backlog_due_date,
                         assignee_id=backlog_assignee_id,
+                        notified_user_ids=backlog_notified_user_ids,
                         custom_field_parameters=custom_field_parameters,
                     )
             except Exception:

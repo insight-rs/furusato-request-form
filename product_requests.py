@@ -325,6 +325,22 @@ def build_backlog_issue_content(
     """商品修正依頼からBacklog親課題の件名・本文を組み立てる。"""
 
     validated_lines = validate_correction_lines(request, lines)
+    # Excel生成のためだけに補完するシステム固定値は、課題本文には出さない。
+    backlog_hidden_columns = {
+        "（必須）包装対応", "（必須）のし対応", "（必須）ポイント情報表示有無",
+        "（必須）会員限定", "（必須）チョイス限定", "（必須）配送状況確認可能",
+        "（必須）配達日種別", "（必須）配達日種別必須フラグ",
+        "（必須）配達時間指定", "（必須）配達時間指定必須フラグ",
+        "配達日FROM", "配達日TO", "配達日数指定FROM", "配達日数指定TO",
+        "配達不可能な日付", "配達不可能な曜日", "親お礼の品ID",
+        "（条件付き必須）バリエーション名", "連携コード",
+        "（条件付き必須）還元率（%）", "（必須）還元率入力有無", "登録年度", "メモ",
+    }
+    display_lines = [
+        line for line in validated_lines
+        if line.field_name not in backlog_hidden_columns
+        and normalize(line.instruction) != "【自動設定】"
+    ]
     if request.work_category == "施策":
         summary_label = "施策"
     elif request.request_unit == "新規商品登録":
@@ -334,10 +350,10 @@ def build_backlog_issue_content(
     else:
         summary_label = request.request_unit
     summary = f"【{summary_label}】{request.municipality_name}"
-    if validated_lines:
+    if display_lines:
         product_count = len({
             (line.product.municipality_id, line.product.product_id)
-            for line in validated_lines
+            for line in display_lines
         })
         summary += f" {product_count}商品"
     # 商品修正の親課題は、担当者などの運用情報を混ぜず、商品ごとの
@@ -357,15 +373,15 @@ def build_backlog_issue_content(
             f"施策具体内容: {request.policy_content}",
             f"施策詳細: {request.policy_detail}",
         ])
-    if request.note and request.request_unit != "商品単位":
+    if request.note:
         description_lines.extend(["", "【対応内容・備考】", request.note])
     if request.request_unit in {"商品単位", "新規商品登録"}:
         description_lines.append("【商品の変更点】")
-    if not validated_lines:
+    if not display_lines:
         description_lines.append("商品単位の変更はありません。")
     else:
         lines_by_product: dict[tuple[str, str], list[ProductCorrectionLine]] = {}
-        for line in validated_lines:
+        for line in display_lines:
             key = (line.product.municipality_id, line.product.product_id)
             lines_by_product.setdefault(key, []).append(line)
         for product_number, product_lines in enumerate(lines_by_product.values(), start=1):
@@ -380,22 +396,24 @@ def build_backlog_issue_content(
             if product.business_name:
                 description_lines.append(f"事業者：{product.business_name}")
             image_instructions = []
-            previous_section = ""
+            change_notes = []
+            description_lines.extend([
+                "",
+                "| 変更項目 | 現在値 | 更新後 |",
+                "|---|---|---|",
+            ])
             for line in product_lines:
                 field_label = normalize(line.display_name) or normalize(line.field_name)
-                section = _backlog_change_section(line.field_name)
-                if section != previous_section:
-                    description_lines.extend(["", f"【{section}】"])
-                    previous_section = section
-                description_lines.extend([
-                    f"・{field_label}",
-                    f"  現状：{_backlog_display_value(line.field_name, line.before_value)}",
-                    f"  更新後：{_backlog_display_value(line.field_name, line.after_value)}",
-                ])
+                before = _backlog_display_value(line.field_name, line.before_value).replace("|", "｜").replace("\n", "<br>")
+                after = _backlog_display_value(line.field_name, line.after_value).replace("|", "｜").replace("\n", "<br>")
+                label = field_label.replace("|", "｜")
+                description_lines.append(f"| {label} | {before} | {after} |")
                 if normalize(line.instruction):
-                    description_lines.append(f"補足：{normalize(line.instruction)}")
+                    change_notes.append(f"{field_label}：{normalize(line.instruction)}")
                 if normalize(line.image_instruction):
                     image_instructions.append(normalize(line.image_instruction))
+            if change_notes:
+                description_lines.extend(["", "補足：", *dict.fromkeys(change_notes)])
             # 画像の指示は、商品情報の変更点の最後にまとめる。
             if image_instructions:
                 description_lines.extend([

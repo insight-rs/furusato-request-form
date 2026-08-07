@@ -154,6 +154,7 @@ def create_issue(
     due_date: date | datetime | str | None = None,
     parent_issue_id: str = "",
     assignee_id: str = "",
+    notified_user_ids: list[str] | tuple[str, ...] | None = None,
     custom_field_parameters: Mapping[str, str | list[str]] | None = None,
     request_sender: RequestSender = _default_request_sender,
 ) -> BacklogIssue:
@@ -185,6 +186,8 @@ def create_issue(
         values["parentIssueId"] = normalize(parent_issue_id)
     if normalize(assignee_id):
         values["assigneeId"] = normalize(assignee_id)
+    if notified_user_ids:
+        values["notifiedUserId[]"] = [normalize(value) for value in notified_user_ids if normalize(value)]
     for key, value in (custom_field_parameters or {}).items():
         normalized_key = normalize(key)
         if not normalized_key.startswith("customField_"):
@@ -213,6 +216,7 @@ def update_issue(
     start_date: date | datetime | str | None = None,
     due_date: date | datetime | str | None = None,
     assignee_id: str = "",
+    notified_user_ids: list[str] | tuple[str, ...] | None = None,
     custom_field_parameters: Mapping[str, str | list[str]] | None = None,
     request_sender: RequestSender = _default_request_sender,
 ) -> BacklogIssue:
@@ -238,6 +242,8 @@ def update_issue(
         values["dueDate"] = normalized_due_date
     if normalize(assignee_id):
         values["assigneeId"] = normalize(assignee_id)
+    if notified_user_ids:
+        values["notifiedUserId[]"] = [normalize(value) for value in notified_user_ids if normalize(value)]
     for key, value in (custom_field_parameters or {}).items():
         normalized_key = normalize(key)
         if not normalized_key.startswith("customField_"):
