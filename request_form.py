@@ -50,6 +50,12 @@ from product_requests import (
     update_product_request_backlog_parent,
 )
 from revision_export import generate_revision_comparison_workbook
+from registration_excel import (
+    NOULESS_REFERENCE_FIELDS,
+    PRODUCT_SHAPES,
+    build_registration_template,
+    read_registration_template,
+)
 
 
 REQUEST_UNITS = ("商品単位", "自治体対応", "その他")
@@ -386,6 +392,14 @@ def _normalize_editor_value(field: RequestFormField, value: object) -> str:
     return text
 
 
+def _table_text(value: object) -> str:
+    """data_editor の空セル（None/NaN）を文字列 "nan" にしない。"""
+
+    if value is None or (not isinstance(value, (list, tuple)) and pd.isna(value)):
+        return ""
+    return str(value).strip()
+
+
 def _is_nonnegative_integer(value: str) -> bool:
     return bool(re.fullmatch(r"\d+", str(value or "").strip()))
 
@@ -409,10 +423,12 @@ def _render_product_change_editor(
     fields: list[RequestFormField],
     *,
     editor_key: str,
+    initial_values: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """商品ごとに、現在値を上・変更後値を下にして入力を受ける。"""
 
     edited_rows = []
+    initial_values = initial_values or {}
     for product_index, product in enumerate(products):
         source_values = product.source_values()
         management_code = source_values.get("管理コード", "") or product.product_id
@@ -456,9 +472,17 @@ def _render_product_change_editor(
                     st.markdown(f"##### {section}")
                     previous_section = section
                 field_key = f"{editor_key}_{product_index}_{field.field_id}"
+                initial_value = initial_values.get(field.source_column, "")
                 if field.source_column == LOCAL_PRODUCT_TYPE_COLUMN:
                     standards = load_local_product_standards()
                     labels = [f"{code}｜{description}" for code, description in standards]
+                    initial_code, _, initial_reason = initial_value.partition("|")
+                    initial_label = next(
+                        (label for label in labels if label.startswith(f"{initial_code}｜")),
+                        "",
+                    )
+                    st.session_state.setdefault(f"{field_key}_type", initial_label)
+                    st.session_state.setdefault(f"{field_key}_reason", initial_reason)
                     selected_label = st.selectbox(
                         "地場産品類型",
                         options=[""] + labels,
@@ -473,10 +497,19 @@ def _render_product_change_editor(
                     after_by_field[field.field_id] = f"{selected_code}|{reason.strip()}" if selected_code or reason.strip() else ""
                 elif field.source_column == CATEGORY_COLUMN:
                     categories = load_choice_categories()
+                    initial_ids = [value.strip() for value in initial_value.split("|") if value.strip()]
                     selected_ids = []
                     st.caption("最大3カテゴリー。最下層のIDだけを保存します。")
                     for category_index in range(3):
+                        initial_category = next(
+                            (row for row in categories if category_index < len(initial_ids) and row.category_id == initial_ids[category_index]),
+                            None,
+                        )
                         major_options = list(dict.fromkeys(row.major for row in categories))
+                        st.session_state.setdefault(
+                            f"{field_key}_{category_index}_major",
+                            initial_category.major if initial_category else "",
+                        )
                         major = st.selectbox(
                             f"カテゴリー{category_index + 1}：大項目" + ("（必須）" if category_index == 0 else "（任意）"),
                             options=[""] + major_options,
@@ -484,6 +517,10 @@ def _render_product_change_editor(
                         )
                         matching_major = [row for row in categories if row.major == major]
                         middle_options = list(dict.fromkeys(row.middle for row in matching_major if row.middle))
+                        st.session_state.setdefault(
+                            f"{field_key}_{category_index}_middle",
+                            initial_category.middle if initial_category else "",
+                        )
                         middle = st.selectbox(
                             f"カテゴリー{category_index + 1}：中項目",
                             options=[""] + middle_options,
@@ -492,6 +529,10 @@ def _render_product_change_editor(
                         )
                         matching_middle = [row for row in matching_major if row.middle == middle]
                         minor_options = list(dict.fromkeys(row.minor for row in matching_middle if row.minor))
+                        st.session_state.setdefault(
+                            f"{field_key}_{category_index}_minor",
+                            initial_category.minor if initial_category else "",
+                        )
                         minor = st.selectbox(
                             f"カテゴリー{category_index + 1}：小項目",
                             options=[""] + minor_options,
@@ -518,12 +559,15 @@ def _render_product_change_editor(
                         help="フォーム項目マスタで設定された固定値です。",
                     )
                 elif field.input_kind == "選択" and field.options():
+                    label_by_code = {code: label for label, code in field.options()}
+                    st.session_state.setdefault(field_key, label_by_code.get(initial_value, initial_value))
                     after_by_field[field.field_id] = st.selectbox(
                         field.label,
                         options=[""] + [label for label, _ in field.options()],
                         key=field_key,
                     )
                 elif field.input_kind == "日付":
+                    st.session_state.setdefault(field_key, _parse_date_value(initial_value))
                     after_by_field[field.field_id] = st.date_input(
                         field.label,
                         value=None,
@@ -532,6 +576,7 @@ def _render_product_change_editor(
                         help="カレンダーから選択できます。直接入力も可能です。",
                     )
                 else:
+                    st.session_state.setdefault(field_key, initial_value)
                     after_by_field[field.field_id] = st.text_input(
                         field.label,
                         key=field_key,
@@ -681,8 +726,10 @@ def _new_product_reference(
 
 
 def _render_temperature_editor(
-    products: list[ProductReference], *, editor_key: str
+    products: list[ProductReference], *, editor_key: str,
+    initial_values: dict[str, str] | None = None,
 ) -> pd.DataFrame:
+    initial_values = initial_values or {}
     rows = []
     for product_index, product in enumerate(products):
         source_values = product.source_values()
@@ -697,11 +744,18 @@ def _render_temperature_editor(
             st.caption(
                 "現在の温度帯：" + ("・".join(current) if current else "未設定")
             )
+            temperature_key = f"{editor_key}_{product_index}"
+            imported = [
+                label for label, column in TEMPERATURE_COLUMNS.items()
+                if initial_values.get(column) == "1"
+            ]
+            if imported:
+                st.session_state.setdefault(temperature_key, imported)
             selected = st.pills(
                 "温度帯（必須・複数選択可）",
                 options=list(TEMPERATURE_COLUMNS),
                 selection_mode="multi",
-                key=f"{editor_key}_{product_index}",
+                key=temperature_key,
             )
         rows.append({"温度帯": selected})
     return pd.DataFrame(rows)
@@ -762,7 +816,9 @@ def _render_allergy_editor(
     allergy_note_field: RequestFormField | None,
     *,
     editor_key: str,
+    initial_values: dict[str, str] | None = None,
 ) -> pd.DataFrame:
+    initial_values = initial_values or {}
     rows = []
     allergy_options = [_allergy_display_name(field) for field in allergy_fields]
     for product_index, product in enumerate(products):
@@ -786,16 +842,28 @@ def _render_allergy_editor(
                 )
             st.dataframe([current_values], hide_index=True)
             st.caption("変更後値")
+            allergy_items_key = f"{editor_key}_{product_index}_items"
+            imported_allergies = [
+                _allergy_display_name(field) for field in allergy_fields
+                if initial_values.get(field.source_column) == "1"
+            ]
+            if imported_allergies:
+                st.session_state.setdefault(allergy_items_key, imported_allergies)
             updated_allergies = st.multiselect(
                 "アレルギー品目（含む品目にチェック）",
                 options=allergy_options,
-                key=f"{editor_key}_{product_index}_items",
+                key=allergy_items_key,
             )
             updated_note = ""
             if allergy_note_field is not None:
+                allergy_note_key = f"{editor_key}_{product_index}_note"
+                st.session_state.setdefault(
+                    allergy_note_key,
+                    initial_values.get(allergy_note_field.source_column, ""),
+                )
                 updated_note = st.text_input(
                     "アレルギー特記事項",
-                    key=f"{editor_key}_{product_index}_note",
+                    key=allergy_note_key,
                 )
         rows.append({
             "アレルギー品目（変更後）": updated_allergies,
@@ -1050,6 +1118,66 @@ def render_product_request_tab(
             key="request_municipality_id",
         )
     is_new_product = work_category == "新規商品登録"
+    product_shape = "単品"
+    registration_source_file = None
+    imported_registration = st.session_state.get("registration_excel_import")
+    if request_unit == "商品単位" or is_new_product:
+        with st.container(border=True):
+            st.subheader("商品形態")
+            product_shape = st.segmented_control(
+                "登録する商品の構成",
+                PRODUCT_SHAPES,
+                default="単品",
+                required=True,
+                key="request_product_shape",
+                width="stretch",
+            )
+            if is_new_product:
+                st.caption(
+                    "単品・定期便・SKU展開ごとに、チョイス全項目を収録した公式Excelを利用できます。"
+                )
+                st.download_button(
+                    "新規商品登録テンプレートをダウンロード",
+                    data=build_registration_template(form_fields, product_shape),
+                    file_name=f"新規商品登録_{product_shape}_テンプレート.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/download:",
+                    key=f"download_registration_template_{product_shape}",
+                )
+                registration_source_file = st.file_uploader(
+                    "入力済みの公式Excelがある場合は取り込む",
+                    type=["xlsx"],
+                    key="registration_excel_upload",
+                    help="取り込んだ値を、新規商品登録フォームの初期値として反映します。",
+                )
+                if registration_source_file is not None:
+                    fingerprint = (
+                        registration_source_file.name,
+                        registration_source_file.size,
+                    )
+                    if st.session_state.get("registration_excel_fingerprint") != fingerprint:
+                        try:
+                            imported_registration = read_registration_template(
+                                registration_source_file.getvalue(), form_fields
+                            )
+                            st.session_state.registration_excel_import = imported_registration
+                            st.session_state.registration_excel_fingerprint = fingerprint
+                            st.session_state.product_change_editor_version += 1
+                        except Exception as error:
+                            st.error(f"Excelを取り込めませんでした：{error}")
+                            imported_registration = None
+                    if imported_registration is not None:
+                        st.success(
+                            f"Excelからチョイス項目 {len(imported_registration.choice_values)}件、"
+                            f"追加情報 {len(imported_registration.extra_values)}件を読み込みました。"
+                        )
+                        if imported_registration.product_shape != product_shape:
+                            st.warning(
+                                f"Excelの商品形態は「{imported_registration.product_shape}」です。"
+                                "画面の商品形態も同じものを選択してください。"
+                            )
+                        for warning in imported_registration.warnings:
+                            st.warning(warning)
 
     selected_policy = None
     if work_category == "施策":
@@ -1352,6 +1480,11 @@ def render_product_request_tab(
                         selected_products,
                         fields_for_input,
                         editor_key=f"product_change_editor_{editor_context}",
+                        initial_values=(
+                            imported_registration.choice_values
+                            if is_new_product and imported_registration is not None
+                            else None
+                        ),
                     )
                 elif fields_for_input:
                     edited_product_values = pd.DataFrame(
@@ -1359,14 +1492,33 @@ def render_product_request_tab(
                     )
                 stock_quantity = ""
                 product_cost = ""
+                new_product_extra_editor = None
+                subscription_detail_editor = None
+                sku_detail_editor = None
                 correction_backlog_values: dict[int, dict[str, str]] = {}
                 if is_new_product:
                     st.subheader("Backlog用の商品情報")
-                    stock_mode = st.radio(
+                    imported_extras = (
+                        imported_registration.extra_values
+                        if imported_registration is not None else {}
+                    )
+                    imported_stock = imported_extras.get("在庫数", "")
+                    stock_mode_key = f"new_product_stock_mode_{editor_context}"
+                    stock_value_key = f"new_product_stock_quantity_{editor_context}"
+                    cost_key = f"new_product_cost_{editor_context}"
+                    st.session_state.setdefault(
+                        stock_mode_key,
+                        "無制限" if imported_stock == "無制限" else "数量を入力",
+                    )
+                    st.session_state.setdefault(
+                        stock_value_key,
+                        "" if imported_stock == "無制限" else imported_stock,
+                    )
+                    st.session_state.setdefault(cost_key, imported_extras.get("商品代（税込）", ""))
+                    stock_mode = st.segmented_control(
                         "在庫数（必須）",
                         options=["数量を入力", "無制限"],
-                        horizontal=True,
-                        key=f"new_product_stock_mode_{editor_context}",
+                        key=stock_mode_key,
                     )
                     if stock_mode == "無制限":
                         stock_quantity = "無制限"
@@ -1374,13 +1526,82 @@ def render_product_request_tab(
                         stock_quantity = st.text_input(
                             "在庫数",
                             placeholder="半角数字で入力",
-                            key=f"new_product_stock_quantity_{editor_context}",
+                            key=stock_value_key,
                         )
                     product_cost = st.text_input(
                         "商品代（税込・必須）",
                         placeholder="半角数字で入力",
-                        key=f"new_product_cost_{editor_context}",
+                        key=cost_key,
                     )
+                    st.subheader("共通追加情報")
+                    st.caption(
+                        "Nouless要件を参考にした補助情報です。チョイス商品マスタには書き込まず、Backlogと出力Excelへ保存します。"
+                    )
+                    extra_rows = [
+                        {
+                            "項目": label,
+                            "必須区分": requirement,
+                            "入力値": imported_extras.get(label, ""),
+                            "選択肢": options.replace("|", " / "),
+                        }
+                        for label, requirement, options in NOULESS_REFERENCE_FIELDS
+                        if label not in {"商品代（税込）", "在庫数"}
+                    ]
+                    new_product_extra_editor = st.data_editor(
+                        pd.DataFrame(extra_rows),
+                        hide_index=True,
+                        disabled=["項目", "必須区分", "選択肢"],
+                        num_rows="fixed",
+                        key=f"new_product_extra_{editor_context}",
+                    )
+                    if product_shape == "定期便":
+                        st.subheader("定期便のお届け内容")
+                        subscription_rows = (
+                            imported_registration.subscription_rows
+                            if imported_registration is not None
+                            and imported_registration.product_shape == "定期便"
+                            else []
+                        )
+                        if not subscription_rows:
+                            subscription_rows = [
+                                {"お届け回": str(index), "お届け時期": "", "お届け内容": "", "内容量": "", "数量": "", "温度帯": "", "補足": ""}
+                                for index in range(1, 3)
+                            ]
+                        subscription_detail_editor = st.data_editor(
+                            pd.DataFrame(subscription_rows),
+                            hide_index=True,
+                            num_rows="dynamic",
+                            column_config={
+                                "温度帯": st.column_config.SelectboxColumn(
+                                    "温度帯", options=["", "常温", "冷蔵", "冷凍"]
+                                )
+                            },
+                            key=f"subscription_detail_{editor_context}",
+                        )
+                    elif product_shape == "SKU展開":
+                        st.subheader("SKU一覧")
+                        sku_rows = (
+                            imported_registration.sku_rows
+                            if imported_registration is not None
+                            and imported_registration.product_shape == "SKU展開"
+                            else []
+                        )
+                        if not sku_rows:
+                            sku_rows = [
+                                {"SKU品番": "", "バリエーション名": "", "選択肢1": "", "選択肢2": "", "商品代（税込）": "", "寄附額": "", "在庫数": "", "温度帯": "", "補足": ""}
+                                for _ in range(2)
+                            ]
+                        sku_detail_editor = st.data_editor(
+                            pd.DataFrame(sku_rows),
+                            hide_index=True,
+                            num_rows="dynamic",
+                            column_config={
+                                "温度帯": st.column_config.SelectboxColumn(
+                                    "温度帯", options=["", "常温", "冷蔵", "冷凍"]
+                                )
+                            },
+                            key=f"sku_detail_{editor_context}",
+                        )
                 elif correction_type in {"金額変更", "在庫数変更"}:
                     st.subheader("変更後の商品管理情報")
                     for product_index, product in enumerate(selected_products):
@@ -1425,6 +1646,11 @@ def render_product_request_tab(
                     edited_temperature_values = _render_temperature_editor(
                         selected_products,
                         editor_key=f"temperature_editor_{editor_context}",
+                        initial_values=(
+                            imported_registration.choice_values
+                            if is_new_product and imported_registration is not None
+                            else None
+                        ),
                     )
                 if allergy_change_requested:
                     st.subheader("アレルギー情報")
@@ -1433,6 +1659,11 @@ def render_product_request_tab(
                         allergy_fields,
                         allergy_note_field,
                         editor_key=f"allergy_change_editor_{editor_context}",
+                        initial_values=(
+                            imported_registration.choice_values
+                            if is_new_product and imported_registration is not None
+                            else None
+                        ),
                     )
                 image_instruction: dict[int, str] = {}
                 with st.expander("画像修正指示（任意・商品別）"):
@@ -1468,6 +1699,82 @@ def render_product_request_tab(
                         input_errors.append("新規商品: 在庫数")
                     if not _is_nonnegative_integer(product_cost):
                         input_errors.append("新規商品: 商品代（税込）")
+                    registration_product = (
+                        new_lines[0].product if new_lines else selected_products[0]
+                    )
+                    new_lines.append(ProductCorrectionLine(
+                        product=registration_product,
+                        field_name=f"{BACKLOG_ONLY_PREFIX}商品形態",
+                        before_value="",
+                        after_value=product_shape,
+                        display_name="商品形態（Backlogのみ）",
+                    ))
+                    extra_value_map = {}
+                    if new_product_extra_editor is not None:
+                        extra_value_map = {
+                            _table_text(row["項目"]): _table_text(row["入力値"])
+                            for _, row in new_product_extra_editor.iterrows()
+                            if _table_text(row["入力値"])
+                        }
+                    for label, value in extra_value_map.items():
+                        new_lines.append(ProductCorrectionLine(
+                            product=registration_product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}{label}",
+                            before_value="",
+                            after_value=value,
+                            display_name=f"{label}（Backlogのみ）",
+                        ))
+                    subscription_rows_for_save = []
+                    sku_rows_for_save = []
+                    if product_shape == "定期便" and subscription_detail_editor is not None:
+                        subscription_rows_for_save = [
+                            {key: _table_text(value) for key, value in row.items()}
+                            for _, row in subscription_detail_editor.iterrows()
+                            if any(_table_text(value) for key, value in row.items() if key != "お届け回")
+                        ]
+                        if len(subscription_rows_for_save) < 2:
+                            input_errors.append("定期便: 2回以上のお届け内容")
+                        for index, row in enumerate(subscription_rows_for_save, start=1):
+                            if not row.get("お届け時期") or not row.get("お届け内容"):
+                                input_errors.append(f"定期便: 第{index}回のお届け時期・内容")
+                            new_lines.append(ProductCorrectionLine(
+                                product=registration_product,
+                                field_name=f"{BACKLOG_ONLY_PREFIX}定期便第{index}回",
+                                before_value="",
+                                after_value="｜".join(
+                                    filter(None, (
+                                        row.get("お届け時期"), row.get("お届け内容"),
+                                        row.get("内容量"), row.get("数量"),
+                                        row.get("温度帯"), row.get("補足"),
+                                    ))
+                                ),
+                                display_name=f"定期便 第{index}回（Backlogのみ）",
+                            ))
+                    elif product_shape == "SKU展開" and sku_detail_editor is not None:
+                        sku_rows_for_save = [
+                            {key: _table_text(value) for key, value in row.items()}
+                            for _, row in sku_detail_editor.iterrows()
+                            if any(_table_text(value) for value in row.values())
+                        ]
+                        if len(sku_rows_for_save) < 2:
+                            input_errors.append("SKU展開: 2件以上のSKU")
+                        for index, row in enumerate(sku_rows_for_save, start=1):
+                            if not row.get("SKU品番") or not row.get("バリエーション名"):
+                                input_errors.append(f"SKU展開: SKU{index}の品番・バリエーション名")
+                            new_lines.append(ProductCorrectionLine(
+                                product=registration_product,
+                                field_name=f"{BACKLOG_ONLY_PREFIX}SKU{index}",
+                                before_value="",
+                                after_value="｜".join(
+                                    filter(None, (
+                                        row.get("SKU品番"), row.get("バリエーション名"),
+                                        row.get("選択肢1"), row.get("選択肢2"),
+                                        row.get("商品代（税込）"), row.get("寄附額"),
+                                        row.get("在庫数"), row.get("温度帯"), row.get("補足"),
+                                    ))
+                                ),
+                                display_name=f"SKU {index}（Backlogのみ）",
+                            ))
                 elif correction_type in {"金額変更", "在庫数変更"}:
                     for product_index, product in enumerate(selected_products):
                         values = correction_backlog_values.get(product_index, {})
@@ -1589,6 +1896,12 @@ def render_product_request_tab(
                             "在庫数": stock_quantity,
                             "商品代（税込）": product_cost,
                         }
+                        st.session_state.new_product_excel_values = {
+                            "商品形態": product_shape,
+                            "追加情報": extra_value_map,
+                            "定期便明細": subscription_rows_for_save,
+                            "SKU明細": sku_rows_for_save,
+                        }
                     st.session_state.product_change_editor_version += 1
                     st.success("変更明細を追加しました。")
                     st.rerun()
@@ -1614,6 +1927,30 @@ def render_product_request_tab(
             hide_index=True,
             height=min(160 + 35 * len(correction_lines), 460),
         )
+        if is_new_product:
+            choice_export_values = {
+                line.field_name: line.after_value
+                for line in correction_lines
+                if not line.field_name.startswith(BACKLOG_ONLY_PREFIX)
+            }
+            excel_values = st.session_state.get("new_product_excel_values", {})
+            export_extras = dict(excel_values.get("追加情報", {}))
+            export_extras.update(st.session_state.get("new_product_backlog_values", {}))
+            st.download_button(
+                "入力済みExcelをダウンロード",
+                data=build_registration_template(
+                    form_fields,
+                    excel_values.get("商品形態", product_shape),
+                    choice_values=choice_export_values,
+                    extra_values=export_extras,
+                    subscription_rows=excel_values.get("定期便明細", []),
+                    sku_rows=excel_values.get("SKU明細", []),
+                ),
+                file_name=f"新規商品登録_{excel_values.get('商品形態', product_shape)}_入力済み.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                icon=":material/download:",
+                key="download_completed_registration_excel",
+            )
         with st.form("edit_added_correction_lines", border=True, enter_to_submit=False):
             st.caption("追加済み明細を再編集する場合は、変更後値または画像修正指示を修正して反映してください。")
             editable_lines = pd.DataFrame([
@@ -1714,6 +2051,12 @@ def render_product_request_tab(
         key="request_uploaded_files",
         help="依頼時にBacklog親課題へ添付します。自動生成する変更後データExcelとは別に添付されます。",
     )
+    uploaded_files = list(uploaded_files or [])
+    if registration_source_file is not None and all(
+        file.name != registration_source_file.name for file in uploaded_files
+    ):
+        uploaded_files.append(registration_source_file)
+        st.caption("取り込んだ公式ExcelもBacklog親課題へ添付します。")
     backlog_priority_id = "3"
     backlog_start_date = None
     backlog_due_date = None
@@ -1922,6 +2265,9 @@ def render_product_request_tab(
                     )
             st.session_state.correction_lines = []
             st.session_state.pop("new_product_backlog_values", None)
+            st.session_state.pop("new_product_excel_values", None)
+            st.session_state.pop("registration_excel_import", None)
+            st.session_state.pop("registration_excel_fingerprint", None)
             try:
                 generated_summary, description = build_backlog_issue_content(
                     request, correction_lines
