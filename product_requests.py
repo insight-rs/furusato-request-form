@@ -327,6 +327,7 @@ def build_backlog_issue_content(
     validated_lines = validate_correction_lines(request, lines)
     # Excel生成のためだけに補完するシステム固定値は、課題本文には出さない。
     backlog_hidden_columns = {
+        "（条件付き必須）ポイント",
         "（必須）包装対応", "（必須）のし対応", "（必須）ポイント情報表示有無",
         "（必須）会員限定", "（必須）チョイス限定", "（必須）配送状況確認可能",
         "（必須）配達日種別", "（必須）配達日種別必須フラグ",
@@ -404,8 +405,14 @@ def build_backlog_issue_content(
             ])
             for line in product_lines:
                 field_label = normalize(line.display_name) or normalize(line.field_name)
-                before = _backlog_display_value(line.field_name, line.before_value).replace("|", "｜").replace("\n", "<br>")
-                after = _backlog_display_value(line.field_name, line.after_value).replace("|", "｜").replace("\n", "<br>")
+                before = " ／ ".join(
+                    _backlog_display_value(line.field_name, line.before_value)
+                    .replace("|", "｜").splitlines()
+                )
+                after = " ／ ".join(
+                    _backlog_display_value(line.field_name, line.after_value)
+                    .replace("|", "｜").splitlines()
+                )
                 label = field_label.replace("|", "｜")
                 description_lines.append(f"| {label} | {before} | {after} |")
                 if normalize(line.instruction):

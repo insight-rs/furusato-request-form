@@ -31,6 +31,17 @@ class BacklogProjectUser:
         return f"{self.name}（{self.mail_address}）" if self.mail_address else self.name
 
 
+@dataclass(frozen=True)
+class BacklogProjectTeam:
+    team_id: str
+    name: str
+    member_user_ids: tuple[str, ...]
+
+    @property
+    def display_name(self) -> str:
+        return f"@{self.name}（{len(self.member_user_ids)}名）"
+
+
 def build_backlog_project_users(rows: Iterable[dict]) -> list[BacklogProjectUser]:
     """ユーザー権限マスタのBacklogユーザーIDを持つ行だけを候補化する。"""
 
@@ -93,6 +104,39 @@ def fetch_backlog_project_users(config: BacklogConfig) -> list[dict]:
     if not isinstance(payload, list):
         raise BacklogApiError("Backlogプロジェクトメンバーの応答形式が不正です。")
     return [row for row in payload if isinstance(row, dict)]
+
+
+def fetch_backlog_project_teams(config: BacklogConfig) -> list[BacklogProjectTeam]:
+    """プロジェクトに登録されたBacklogチームと所属メンバーを取得する。"""
+
+    project_id = resolve_project_id(config)
+    url = (
+        f"{backlog_base_url(config.space_id)}/api/v2/projects/{project_id}/teams?"
+        f"{urlencode({'apiKey': config.api_key})}"
+    )
+    try:
+        with urlopen(url, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as error:
+        raise BacklogApiError("Backlogプロジェクトチームを取得できませんでした。") from error
+    if not isinstance(payload, list):
+        raise BacklogApiError("Backlogプロジェクトチームの応答形式が不正です。")
+    teams = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        member_ids = tuple(
+            normalize(member.get("id"))
+            for member in row.get("members", [])
+            if isinstance(member, dict) and normalize(member.get("id"))
+        )
+        if normalize(row.get("id")) and normalize(row.get("name")):
+            teams.append(BacklogProjectTeam(
+                team_id=normalize(row.get("id")),
+                name=normalize(row.get("name")),
+                member_user_ids=member_ids,
+            ))
+    return sorted(teams, key=lambda team: team.name.casefold())
 
 
 def sync_backlog_project_users(

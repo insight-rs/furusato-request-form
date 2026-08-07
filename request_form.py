@@ -23,7 +23,11 @@ from backlog_custom_fields import (
 )
 from backlog_issue_types import load_backlog_issue_types
 from backlog_statuses import load_backlog_statuses
-from backlog_users import get_project_users, load_backlog_project_users
+from backlog_users import (
+    fetch_backlog_project_teams,
+    get_project_users,
+    load_backlog_project_users,
+)
 from form_definitions import (
     RequestFormField,
     find_request_form_field,
@@ -198,6 +202,11 @@ def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
         spreadsheet_id=config_spreadsheet_id,
         credentials_path=Path(credentials_path_text),
     )
+
+
+@st.cache_data(ttl=600, max_entries=20)
+def _load_backlog_teams(config):
+    return fetch_backlog_project_teams(config)
 
 
 @st.cache_data(ttl=600, max_entries=2)
@@ -403,6 +412,41 @@ def _table_text(value: object) -> str:
 
 def _is_nonnegative_integer(value: str) -> bool:
     return bool(re.fullmatch(r"\d+", str(value or "").strip()))
+
+
+def _build_management_code_lines(product, new_code: str) -> list[ProductCorrectionLine]:
+    """品番変更に伴う管理コード・連携コード・商品名をまとめて更新する。"""
+
+    source_values = product.source_values()
+    old_code = source_values.get(MANAGEMENT_CODE_COLUMN, "")
+    lines = [
+        ProductCorrectionLine(
+            product=product,
+            field_name=field_name,
+            before_value=source_values.get(field_name, ""),
+            after_value=new_code,
+            display_name=display_name,
+            column_number=product.source_column_number(field_name),
+        )
+        for field_name, display_name in (
+            (MANAGEMENT_CODE_COLUMN, "品番"),
+            (LINK_CODE_COLUMN, "連携コード"),
+        )
+    ]
+    base_name = product.product_name
+    if old_code and base_name.endswith(f" {old_code}"):
+        base_name = base_name[: -(len(old_code) + 1)]
+    revised_name = f"{base_name} {new_code}".strip()
+    if revised_name != product.product_name:
+        lines.append(ProductCorrectionLine(
+            product=product,
+            field_name=PRODUCT_NAME_COLUMN,
+            before_value=product.product_name,
+            after_value=revised_name,
+            display_name="商品名",
+            column_number=product.source_column_number(PRODUCT_NAME_COLUMN),
+        ))
+    return lines
 
 
 def _field_column_config(field: RequestFormField):
@@ -1381,6 +1425,7 @@ def render_product_request_tab(
             if _field_visibility(field, is_new_product=is_new_product) in {"常時表示", "固定"}
             or bool(field.fixed_value)
         ]
+        code_change_requested = False
         if is_new_product:
             new_product_code_method = st.segmented_control(
                 "品番の用意方法（必須）",
@@ -1462,6 +1507,15 @@ def render_product_request_tab(
                 (always_fields if correction_type == "複合的な修正" else [])
                 + selected_optional_fields
             ))
+            code_change_requested = any(
+                field.source_column == MANAGEMENT_CODE_COLUMN
+                for field in selected_fields
+            )
+            if code_change_requested:
+                selected_fields = [
+                    field for field in selected_fields
+                    if field.source_column != MANAGEMENT_CODE_COLUMN
+                ]
         temperature_change_requested = is_new_product or (
             correction_type == "複合的な修正"
             and TEMPERATURE_CHANGE_OPTION in selected_change_options
@@ -1524,6 +1578,25 @@ def render_product_request_tab(
                 subscription_detail_editor = None
                 sku_detail_editor = None
                 correction_backlog_values: dict[int, dict[str, str]] = {}
+                if code_change_requested:
+                    st.subheader("品番変更")
+                    st.caption("新規登録と同様に、新品番を入力するか品番取得を依頼してください。")
+                    for product_index, product in enumerate(selected_products):
+                        with st.container(border=True):
+                            st.markdown(f"**{_product_label(product)}**")
+                            code_method = st.segmented_control(
+                                "品番の用意方法（必須）",
+                                ["新品番を入力する", "品番取得を依頼する"],
+                                default="新品番を入力する",
+                                key=f"compound_code_method_{editor_context}_{product_index}",
+                            )
+                            values = {"品番取得方法": code_method or ""}
+                            if code_method == "新品番を入力する":
+                                values["新品番"] = st.text_input(
+                                    "新品番",
+                                    key=f"compound_new_code_{editor_context}_{product_index}",
+                                )
+                            correction_backlog_values[product_index] = values
                 if is_new_product:
                     st.subheader("Backlog用の商品情報")
                     imported_extras = (
@@ -1768,6 +1841,23 @@ def render_product_request_tab(
                                 column_number=product.source_column_number(column),
                                 display_name=field.label if field else column,
                             ))
+                if code_change_requested:
+                    for product_index, product in enumerate(selected_products):
+                        values = correction_backlog_values.get(product_index, {})
+                        if values.get("品番取得方法") == "品番取得を依頼する":
+                            new_lines.append(ProductCorrectionLine(
+                                product=product,
+                                field_name=f"{BACKLOG_ONLY_PREFIX}品番取得依頼",
+                                before_value="",
+                                after_value="品番取得を依頼",
+                                display_name="品番取得依頼（Backlogのみ）",
+                            ))
+                        else:
+                            new_code = values.get("新品番", "").strip()
+                            if not new_code:
+                                input_errors.append(f"{_product_label(product)}: 新品番")
+                            else:
+                                new_lines.extend(_build_management_code_lines(product, new_code))
                 if is_new_product:
                     if stock_quantity != "無制限" and not _is_nonnegative_integer(stock_quantity):
                         input_errors.append("新規商品: 在庫数")
@@ -2098,6 +2188,7 @@ def render_product_request_tab(
     backlog_notified_user_ids: list[str] = []
     target_custom_fields = []
     target_project_users = []
+    target_project_teams = []
     requester = ""
     if create_backlog_issue and selected_issue_type is not None:
         try:
@@ -2108,6 +2199,11 @@ def render_product_request_tab(
         except Exception:
             target_project_users = []
             st.warning("Backlog担当者候補を読み込めません。担当者は未指定で起票できます。")
+        try:
+            target_project_teams = _load_backlog_teams(target_backlog_config)
+        except Exception:
+            target_project_teams = []
+            st.warning("Backlogチームを読み込めません。個人の通知先は選択できます。")
         if target_project_users:
             requester_user = st.selectbox(
                 "依頼者（Backlogメンバーから選択・記録用）",
@@ -2148,19 +2244,30 @@ def render_product_request_tab(
                 target_backlog_config.product_code_notified_user_ids
                 if code_action_required and target_backlog_config else ()
             )
-            notification_users = st.multiselect(
-                "Backlog通知先（任意）",
-                options=target_project_users,
+            notification_options = [
+                ("user", user.user_id, user.display_name, (user.user_id,))
+                for user in target_project_users
+            ] + [
+                ("team", team.team_id, team.display_name, team.member_user_ids)
+                for team in target_project_teams
+            ]
+            notification_targets = st.multiselect(
+                "Backlog通知先・チーム（任意）",
+                options=notification_options,
                 default=[
-                    user for user in target_project_users
-                    if user.user_id in forced_notification_ids
+                    option for option in notification_options
+                    if option[0] == "user" and option[1] in forced_notification_ids
                 ],
-                format_func=lambda user: user.display_name,
-                key=f"notified_users_{target_municipality_id}",
-                help="品番取得・変更時は、自治体マスタの通知先が自動的に追加されます。",
+                format_func=lambda option: option[2],
+                key=f"notified_targets_{target_municipality_id}",
+                help="@チームを選ぶと、そのチームの所属メンバー全員へ通知します。",
             )
             backlog_notified_user_ids = list(dict.fromkeys(
-                [user.user_id for user in notification_users] + list(forced_notification_ids)
+                [
+                    user_id
+                    for option in notification_targets
+                    for user_id in option[3]
+                ] + list(forced_notification_ids)
             ))
         else:
             requester = st.text_input("依頼者", key="requester")
