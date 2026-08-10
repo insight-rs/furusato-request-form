@@ -70,7 +70,7 @@ def _backlog_line_priority(line: "ProductCorrectionLine") -> tuple[int, str]:
         return 0, label or field
     if field == "（必須）お礼の品名" or label == "商品名":
         return 1, label or field
-    if "寄附額" in field or "寄附額" in label:
+    if any(term in field or term in label for term in ("寄附額", "寄付額")):
         return 2, label or field
     if "商品代" in field or "商品代" in label:
         return 3, label or field
@@ -81,6 +81,30 @@ def _backlog_line_priority(line: "ProductCorrectionLine") -> tuple[int, str]:
 
 def _find_priority_line(lines: list["ProductCorrectionLine"], priority: int):
     return next((line for line in lines if _backlog_line_priority(line)[0] == priority), None)
+
+
+def _strip_trailing_product_code(value: str, product_code: str) -> str:
+    """商品名末尾へ自動付与された「半角スペース + 品番」だけを取り除く。"""
+    name = normalize(value)
+    code = normalize(product_code)
+    suffix = f" {code}" if code else ""
+    return name[:-len(suffix)].rstrip() if suffix and name.endswith(suffix) else name
+
+
+def _split_request_note(note: str) -> tuple[str, str]:
+    """通常の備考と、フォーム側で備考へ格納されたBOX URLを分離する。"""
+    note_lines: list[str] = []
+    box_url = ""
+    for raw_line in str(note or "").splitlines():
+        line = raw_line.strip()
+        if line in {"【関連ファイル】", "【対応内容・備考】"}:
+            continue
+        if line.startswith(("BOX URL：", "BOX URL:", "BOXURL：", "BOXURL:")):
+            box_url = line.split("：", 1)[-1] if "：" in line else line.split(":", 1)[-1]
+            box_url = box_url.strip()
+            continue
+        note_lines.append(raw_line)
+    return "\n".join(note_lines).strip(), box_url
 
 
 @dataclass(frozen=True)
@@ -395,10 +419,11 @@ def build_backlog_issue_content(
             f"施策具体内容: {request.policy_content}",
             f"施策詳細: {request.policy_detail}",
         ])
-    if request.note:
-        description_lines.extend(["", "【対応内容・備考】", request.note])
+    request_note, box_url = _split_request_note(request.note)
     if request.request_unit in {"商品単位", "新規商品登録"}:
         description_lines.append("【商品の変更点】")
+        if request_note:
+            description_lines.extend(["", "対応内容・備考：", request_note])
     if not display_lines:
         description_lines.append("商品単位の変更はありません。")
     else:
@@ -406,18 +431,11 @@ def build_backlog_issue_content(
         for line in display_lines:
             key = (line.product.municipality_id, line.product.product_id)
             lines_by_product.setdefault(key, []).append(line)
-        for product_number, product_lines in enumerate(lines_by_product.values(), start=1):
+        for product_lines in lines_by_product.values():
             product_lines = sorted(product_lines, key=_backlog_line_priority)
             product = product_lines[0].product
             management_code = normalize(product.source_values().get("管理コード"))
-            description_lines.extend([
-                "",
-                "━━━━━━━━━━━━━━━━━━━━",
-                f"■ 商品{product_number}｜品番：{management_code or product.product_id or '未設定'}",
-                f"商品名：{product.product_name or '未設定'}",
-            ])
-            if product.business_name:
-                description_lines.append(f"事業者：{product.business_name}")
+            description_lines.extend(["", "━━━━━━━━━━━━━━━━━━━━"])
             source_values = product.source_values()
             code_line = _find_priority_line(product_lines, 0)
             name_line = _find_priority_line(product_lines, 1)
@@ -434,38 +452,53 @@ def build_backlog_issue_content(
                 )
                 return f"{before} → {after}"
 
+            before_code = normalize(code_line.before_value) if code_line else management_code
+            after_code = normalize(code_line.after_value) if code_line else management_code
+            before_name = _strip_trailing_product_code(
+                name_line.before_value if name_line else product.product_name, before_code
+            )
+            after_name = _strip_trailing_product_code(
+                name_line.after_value if name_line else product.product_name, after_code
+            )
+
+            def product_cost_summary() -> str:
+                if not cost_line:
+                    return "商品代：変更なし"
+                after = _backlog_display_value(cost_line.field_name, cost_line.after_value)
+                return f"商品代：{after}（変更後商品代）"
+
             # 作業者が最初に確認するページ修正テンプレート。
             # 商品修正では品番・商品名・寄附額・商品代を必ず明示し、在庫は依頼時のみ表示する。
             if request.request_unit == "商品単位":
                 description_lines.extend([
-                    "",
-                    "【ページ修正テンプレート】",
                     f"品番：{transition(management_code, code_line)}",
-                    f"商品名：{transition(product.product_name, name_line)}",
+                    f"商品名：{before_name} → {after_name}",
                     f"寄附額：{transition(source_values.get('（条件付き必須）必要寄付金額', ''), donation_line)}",
-                    (
-                        f"商品代：{transition(source_values.get('商品代（税込）', ''), cost_line)}"
-                        if cost_line else "商品代：変更なし"
-                    ),
+                    product_cost_summary(),
                 ])
                 if stock_line:
                     description_lines.append(
                         f"在庫：{_backlog_display_value(stock_line.field_name, stock_line.after_value)}"
                     )
+                if product.business_name:
+                    description_lines.append(f"事業者名：{product.business_name}")
             else:
                 changed_summaries = []
-                for label, line in (
-                    ("品番", code_line), ("商品名", name_line),
-                    ("寄附額", donation_line), ("商品代", cost_line),
-                ):
+                for label, line in (("品番", code_line), ("寄附額", donation_line)):
                     if line:
                         changed_summaries.append(f"{label}：{transition('', line)}")
+                if name_line:
+                    changed_summaries.append(f"商品名：{before_name} → {after_name}")
+                if cost_line:
+                    changed_summaries.append(product_cost_summary())
                 if stock_line:
                     changed_summaries.append(
                         f"在庫：{_backlog_display_value(stock_line.field_name, stock_line.after_value)}"
                     )
                 if changed_summaries:
-                    description_lines.extend(["", "【ページ修正テンプレート】", *changed_summaries])
+                    description_lines.extend(changed_summaries)
+                if product.business_name:
+                    description_lines.append(f"事業者名：{product.business_name}")
 
             sku_or_subscription = [
                 line for line in product_lines
@@ -495,6 +528,15 @@ def build_backlog_issue_content(
                     _backlog_display_value(line.field_name, line.after_value)
                     .replace("|", "｜").splitlines()
                 )
+                priority = _backlog_line_priority(line)[0]
+                if priority == 1:
+                    before = _strip_trailing_product_code(line.before_value, before_code)
+                    after = _strip_trailing_product_code(line.after_value, after_code)
+                elif priority == 2:
+                    field_label = "寄附額"
+                elif priority == 3:
+                    before = "—"
+                    after = f"{after}（変更後商品代）"
                 label = field_label.replace("|", "｜")
                 description_lines.append(f"| {label} | {before} | {after} |")
                 if normalize(line.instruction):
@@ -510,6 +552,10 @@ def build_backlog_issue_content(
                     "画像修正指示：",
                     *dict.fromkeys(image_instructions),
                 ])
+    if request_note and request.request_unit not in {"商品単位", "新規商品登録"}:
+        description_lines.extend(["", "対応内容・備考：", request_note])
+    if box_url:
+        description_lines.extend(["", f"BOX URL：{box_url}"])
     return summary, "\n".join(description_lines)
 
 
