@@ -91,6 +91,17 @@ def _strip_trailing_product_code(value: str, product_code: str) -> str:
     return name[:-len(suffix)].rstrip() if suffix and name.endswith(suffix) else name
 
 
+def _updated_product_name(
+    value: str, *, current_code: str, updated_code: str, code_requested: bool
+) -> str:
+    """新品番入力時だけ更新後商品名へ新品番を付け、取得依頼時は品番を外す。"""
+    name = _strip_trailing_product_code(value, current_code)
+    name = _strip_trailing_product_code(name, updated_code)
+    if code_requested:
+        return name
+    return f"{name} {updated_code}".strip() if updated_code else normalize(value)
+
+
 def _split_request_note(note: str) -> tuple[str, str]:
     """通常の備考と、フォーム側で備考へ格納されたBOX URLを分離する。"""
     note_lines: list[str] = []
@@ -432,12 +443,39 @@ def build_backlog_issue_content(
             lines_by_product.setdefault(key, []).append(line)
         for product_lines in lines_by_product.values():
             product_lines = sorted(product_lines, key=_backlog_line_priority)
+            # 商品名の手入力変更と品番変更による自動更新が両方ある場合も、
+            # 課題詳細では商品名を1行だけ表示する。
+            name_lines = [
+                line for line in product_lines if _backlog_line_priority(line)[0] == 1
+            ]
+            if len(name_lines) > 1:
+                retained_name_line = name_lines[0]
+                product_lines = [
+                    line for line in product_lines
+                    if _backlog_line_priority(line)[0] != 1 or line is retained_name_line
+                ]
             product = product_lines[0].product
             management_code = normalize(product.source_values().get("管理コード"))
             description_lines.extend(["", "━━━━━━━━━━━━━━━━━━━━"])
             source_values = product.source_values()
             code_line = _find_priority_line(product_lines, 0)
             name_line = _find_priority_line(product_lines, 1)
+            if (
+                code_line
+                and normalize(code_line.field_name).endswith("品番取得依頼")
+                and name_line is None
+            ):
+                name_line = ProductCorrectionLine(
+                    product=product,
+                    field_name="Backlogのみ：商品名表示",
+                    before_value=product.product_name,
+                    after_value=_strip_trailing_product_code(
+                        product.product_name, normalize(code_line.before_value)
+                    ),
+                    display_name="商品名",
+                )
+                product_lines.append(name_line)
+                product_lines = sorted(product_lines, key=_backlog_line_priority)
             donation_line = _find_priority_line(product_lines, 2)
             cost_line = _find_priority_line(product_lines, 3)
             stock_line = _find_priority_line(product_lines, 4)
@@ -453,11 +491,17 @@ def build_backlog_issue_content(
 
             before_code = normalize(code_line.before_value) if code_line else management_code
             after_code = normalize(code_line.after_value) if code_line else management_code
-            before_name = _strip_trailing_product_code(
-                name_line.before_value if name_line else product.product_name, before_code
+            code_requested = bool(
+                code_line and normalize(code_line.field_name).endswith("品番取得依頼")
             )
-            after_name = _strip_trailing_product_code(
-                name_line.after_value if name_line else product.product_name, after_code
+            before_name = normalize(
+                name_line.before_value if name_line else product.product_name
+            )
+            after_name = _updated_product_name(
+                name_line.after_value if name_line else product.product_name,
+                current_code=before_code,
+                updated_code="" if code_requested else after_code,
+                code_requested=code_requested,
             )
 
             def product_cost_summary() -> str:
@@ -529,8 +573,8 @@ def build_backlog_issue_content(
                 )
                 priority = _backlog_line_priority(line)[0]
                 if priority == 1:
-                    before = _strip_trailing_product_code(line.before_value, before_code)
-                    after = _strip_trailing_product_code(line.after_value, after_code)
+                    before = normalize(line.before_value)
+                    after = after_name
                 elif priority == 2:
                     field_label = "寄附額"
                 elif priority == 3:
