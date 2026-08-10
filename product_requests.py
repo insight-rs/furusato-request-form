@@ -476,19 +476,6 @@ def build_backlog_issue_content(
                 )
                 product_lines.append(name_line)
                 product_lines = sorted(product_lines, key=_backlog_line_priority)
-            donation_line = _find_priority_line(product_lines, 2)
-            cost_line = _find_priority_line(product_lines, 3)
-            stock_line = _find_priority_line(product_lines, 4)
-
-            def transition(current: str, line: ProductCorrectionLine | None) -> str:
-                before = _backlog_display_value(
-                    line.field_name if line else "", line.before_value if line else current
-                )
-                after = _backlog_display_value(
-                    line.field_name if line else "", line.after_value if line else current
-                )
-                return f"{before} → {after}"
-
             before_code = normalize(code_line.before_value) if code_line else management_code
             after_code = normalize(code_line.after_value) if code_line else management_code
             code_requested = bool(
@@ -497,51 +484,35 @@ def build_backlog_issue_content(
             before_name = normalize(
                 name_line.before_value if name_line else product.product_name
             )
-            after_name = _updated_product_name(
-                name_line.after_value if name_line else product.product_name,
-                current_code=before_code,
-                updated_code="" if code_requested else after_code,
-                code_requested=code_requested,
+            after_name = (
+                before_name
+                if code_line is None and name_line is None
+                else _updated_product_name(
+                    name_line.after_value if name_line else product.product_name,
+                    current_code=before_code,
+                    updated_code="" if code_requested else after_code,
+                    code_requested=code_requested,
+                )
             )
 
-            def product_cost_summary() -> str:
-                if not cost_line:
-                    return "商品代：変更なし"
-                after = _backlog_display_value(cost_line.field_name, cost_line.after_value)
-                return f"商品代：{after}（変更後商品代）"
-
-            # 作業者が最初に確認するページ修正テンプレート。
-            # 商品修正では品番・商品名・寄附額・商品代を必ず明示し、在庫は依頼時のみ表示する。
-            if request.request_unit == "商品単位":
-                description_lines.extend([
-                    f"品番：{transition(management_code, code_line)}",
-                    f"商品名：{before_name} → {after_name}",
-                    f"寄附額：{transition(source_values.get('（条件付き必須）必要寄付金額', ''), donation_line)}",
-                    product_cost_summary(),
-                ])
-                if stock_line:
-                    description_lines.append(
-                        f"在庫：{_backlog_display_value(stock_line.field_name, stock_line.after_value)}"
-                    )
-                if product.business_name:
-                    description_lines.append(f"事業者名：{product.business_name}")
-            else:
-                changed_summaries = []
-                for label, line in (("品番", code_line), ("寄附額", donation_line)):
-                    if line:
-                        changed_summaries.append(f"{label}：{transition('', line)}")
-                if name_line:
-                    changed_summaries.append(f"商品名：{before_name} → {after_name}")
-                if cost_line:
-                    changed_summaries.append(product_cost_summary())
-                if stock_line:
-                    changed_summaries.append(
-                        f"在庫：{_backlog_display_value(stock_line.field_name, stock_line.after_value)}"
-                    )
-                if changed_summaries:
-                    description_lines.extend(changed_summaries)
-                if product.business_name:
-                    description_lines.append(f"事業者名：{product.business_name}")
+            table_code_line = code_line or ProductCorrectionLine(
+                product=product,
+                field_name="Backlogのみ：品番表示",
+                before_value=management_code,
+                after_value=management_code,
+                display_name="品番",
+            )
+            table_name_line = name_line or ProductCorrectionLine(
+                product=product,
+                field_name="Backlogのみ：商品名表示",
+                before_value=before_name,
+                after_value=after_name,
+                display_name="商品名",
+            )
+            table_lines = [table_code_line, table_name_line] + [
+                line for line in product_lines
+                if _backlog_line_priority(line)[0] not in {0, 1}
+            ]
 
             sku_or_subscription = [
                 line for line in product_lines
@@ -561,7 +532,7 @@ def build_backlog_issue_content(
                 "| 変更項目 | 現在値 | 更新後 |",
                 "|---|---|---|",
             ])
-            for line in product_lines:
+            for line in table_lines:
                 field_label = normalize(line.display_name) or normalize(line.field_name)
                 before = " ／ ".join(
                     _backlog_display_value(line.field_name, line.before_value)
