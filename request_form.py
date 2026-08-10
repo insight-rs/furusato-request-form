@@ -1681,6 +1681,7 @@ def render_product_request_tab(
                     ["品番を入力する", "品番取得を依頼する"],
                     default="品番を入力する",
                     key="new_product_code_method",
+                    persist_state="session",
                 )
             business_fields = []
             business_name_field = find_request_form_field(form_fields, "サイト表示事業者名")
@@ -1844,6 +1845,7 @@ def render_product_request_tab(
                                 default=None,
                                 required=True,
                                 key=f"correction_cost_mode_{editor_context}_{product_index}",
+                                persist_state="session",
                             )
                             values = {"商品代変更": cost_change_mode or ""}
                             if cost_change_mode == "商品代を変更する":
@@ -1851,6 +1853,7 @@ def render_product_request_tab(
                                     "変更後の商品代（税込・必須）",
                                     placeholder="半角数字で入力",
                                     key=f"correction_cost_{editor_context}_{product_index}",
+                                    persist_state="session",
                                 )
                             correction_backlog_values[product_index] = values
                 if not is_new_product and product_shape == "定期便":
@@ -1878,6 +1881,7 @@ def render_product_request_tab(
                                 ["新品番を入力する", "品番取得を依頼する"],
                                 default="新品番を入力する",
                                 key=f"compound_code_method_{editor_context}_{product_index}",
+                                persist_state="session",
                             )
                             values = correction_backlog_values.setdefault(product_index, {})
                             values["品番取得方法"] = code_method or ""
@@ -1885,6 +1889,7 @@ def render_product_request_tab(
                                 values["新品番"] = st.text_input(
                                     "新品番",
                                     key=f"compound_new_code_{editor_context}_{product_index}",
+                                    persist_state="session",
                                 )
                             correction_backlog_values[product_index] = values
                 if is_new_product:
@@ -1910,6 +1915,7 @@ def render_product_request_tab(
                         "在庫数（必須）",
                         options=["数量を入力", "無制限"],
                         key=stock_mode_key,
+                        persist_state="session",
                     )
                     if stock_mode == "無制限":
                         stock_quantity = "無制限"
@@ -1918,17 +1924,20 @@ def render_product_request_tab(
                             "在庫数",
                             placeholder="半角数字で入力",
                             key=stock_value_key,
+                            persist_state="session",
                         )
                     product_cost = st.text_input(
                         "商品代（税込・必須）",
                         placeholder="半角数字で入力",
                         key=cost_key,
+                        persist_state="session",
                     )
                     shipping_period_mode = st.segmented_control(
                         "発送可能時期（必須）",
                         ["通年", "時期指定あり"],
                         default="通年",
                         key=f"shipping_period_mode_{editor_context}",
+                        persist_state="session",
                     )
                     shipping_period_from = None
                     shipping_period_to = None
@@ -1938,11 +1947,13 @@ def render_product_request_tab(
                             shipping_period_from = st.date_input(
                                 "発送可能期間FROM", value=None, format="YYYY-MM-DD",
                                 key=f"shipping_period_from_{editor_context}",
+                                persist_state="session",
                             )
                         with period_columns[1]:
                             shipping_period_to = st.date_input(
                                 "発送可能期間TO", value=None, format="YYYY-MM-DD",
                                 key=f"shipping_period_to_{editor_context}",
+                                persist_state="session",
                             )
                     st.subheader("共通追加情報")
                     st.caption(
@@ -2004,11 +2015,13 @@ def render_product_request_tab(
                                     options=["数量を入力", "無制限"],
                                     default="数量を入力",
                                     key=f"correction_stock_mode_{editor_context}_{product_index}",
+                                    persist_state="session",
                                 )
                                 values["在庫数"] = "無制限" if stock_mode == "無制限" else st.text_input(
                                     "変更後の在庫数",
                                     placeholder="半角数字で入力",
                                     key=f"correction_stock_value_{editor_context}_{product_index}",
+                                    persist_state="session",
                                 )
                             else:
                                 code_method = st.segmented_control(
@@ -2016,12 +2029,14 @@ def render_product_request_tab(
                                     options=["品番を変更しない", "新品番を入力", "品番取得を外部依頼"],
                                     default="品番を変更しない",
                                     key=f"correction_code_method_{editor_context}_{product_index}",
+                                    persist_state="session",
                                 )
                                 values["品番取得方法"] = code_method or ""
                                 if code_method == "新品番を入力":
                                     values["新品番"] = st.text_input(
                                         "新品番",
                                         key=f"correction_new_code_{editor_context}_{product_index}",
+                                        persist_state="session",
                                     )
                             correction_backlog_values[product_index] = values
                 edited_allergy_values = None
@@ -2060,6 +2075,7 @@ def render_product_request_tab(
                             f"{_product_label(product)} の画像修正指示",
                             placeholder="例：1枚目を添付画像へ差し替え。背景を白に統一。",
                             key=f"request_image_instruction_{editor_context}_{product_index}",
+                            persist_state="session",
                         )
                 add_lines = st.button(
                     "選択した変更を明細に追加",
