@@ -64,3 +64,20 @@ def test_issue_creation_with_oauth_does_not_put_api_key_in_url():
     assert issue.issue_key == "P-1"
     assert calls[0][1] == "https://sample.backlog.com/api/v2/issues"
     assert "must-not-leak" not in calls[0][1]
+
+
+def test_required_label_highlights_required_marker_in_red():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'return label.replace("必須", ":red[必須]")' in source
+
+
+def test_initial_backlog_link_gate_is_before_product_input_flow():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    gate = source.index('st.subheader(":material/link: 初回のBacklog連携")')
+    product_shape = source.index('st.subheader("商品形態")', gate)
+    assert gate < product_shape
+    assert source.index("return", gate, product_shape) > gate

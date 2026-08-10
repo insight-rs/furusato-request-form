@@ -73,6 +73,14 @@ REQUEST_UNITS = ("商品単位", "自治体対応", "その他")
 WORK_CATEGORIES = ("一般業務", "新規商品登録", "施策", "その他")
 DONATION_COLUMN = "（条件付き必須）必要寄付金額"
 POINTS_COLUMN = "（条件付き必須）ポイント"
+
+
+def _required_label(label: str) -> str:
+    """必須表示をStreamlitのラベル内で赤く強調する。"""
+
+    if "必須" not in label:
+        return label
+    return label.replace("必須", ":red[必須]")
 WASTE_FLAG_COLUMN = "（必須）地域の生産者応援の品（訳ありの品）"
 WASTE_BRANCH_COLUMNS = (
     "規格外になった理由",
@@ -577,7 +585,10 @@ def _render_product_change_editor(
                             initial_category.major if initial_category else "",
                         )
                         major = st.selectbox(
-                            f"カテゴリー{category_index + 1}：大項目" + ("（必須）" if category_index == 0 else "（任意）"),
+                            _required_label(
+                                f"カテゴリー{category_index + 1}：大項目"
+                                + ("（必須）" if category_index == 0 else "（任意）")
+                            ),
                             options=[""] + major_options,
                             key=f"{field_key}_{category_index}_major",
                             persist_state="session",
@@ -621,7 +632,7 @@ def _render_product_change_editor(
                 elif field.fixed_value:
                     after_by_field[field.field_id] = field.fixed_value
                     st.text_input(
-                        field.label,
+                        _required_label(field.label),
                         value=_display_field_value(field, field.fixed_value),
                         disabled=True,
                         key=field_key,
@@ -632,7 +643,7 @@ def _render_product_change_editor(
                     label_by_code = {code: label for label, code in field.options()}
                     st.session_state.setdefault(field_key, label_by_code.get(initial_value, initial_value))
                     after_by_field[field.field_id] = st.selectbox(
-                        field.label,
+                        _required_label(field.label),
                         options=[""] + [label for label, _ in field.options()],
                         key=field_key,
                         persist_state="session",
@@ -640,7 +651,7 @@ def _render_product_change_editor(
                 elif field.input_kind == "日付":
                     st.session_state.setdefault(field_key, _parse_date_value(initial_value))
                     after_by_field[field.field_id] = st.date_input(
-                        field.label,
+                        _required_label(field.label),
                         value=None,
                         format="YYYY-MM-DD",
                         key=field_key,
@@ -650,7 +661,7 @@ def _render_product_change_editor(
                 else:
                     st.session_state.setdefault(field_key, initial_value)
                     after_by_field[field.field_id] = st.text_input(
-                        field.label,
+                        _required_label(field.label),
                         key=field_key,
                         persist_state="session",
                     )
@@ -825,7 +836,7 @@ def _render_temperature_editor(
             if imported:
                 st.session_state.setdefault(temperature_key, imported)
             selected = st.pills(
-                "温度帯（必須・複数選択可）",
+                _required_label("温度帯（必須・複数選択可）"),
                 options=list(TEMPERATURE_COLUMNS),
                 selection_mode="multi",
                 key=temperature_key,
@@ -884,7 +895,7 @@ def _render_subscription_detail_editor(*, editor_context: str, imported_rows=Non
     imported_rows = list(imported_rows or [])
     default_count = max(2, len(imported_rows))
     delivery_count = int(st.number_input(
-        "お届け回数（必須）", min_value=2, max_value=36, value=default_count,
+        _required_label("お届け回数（必須）"), min_value=2, max_value=36, value=default_count,
         step=1, key=f"subscription_count_{editor_context}",
     ))
     st.caption(f"第1回～第{delivery_count}回の入力欄を表示しています。")
@@ -921,7 +932,7 @@ def _render_sku_detail_editor(
     imported_rows = list(imported_rows or [])
     if is_new_product:
         composition = st.segmented_control(
-            "SKUにまとめる商品の構成（必須）",
+            _required_label("SKUにまとめる商品の構成（必須）"),
             ["新規商品のみ", "既存商品のみ", "新規＋既存"],
             default="新規商品のみ", required=True,
             key=f"sku_composition_{editor_context}",
@@ -932,7 +943,7 @@ def _render_sku_detail_editor(
 
     default_count = max(2, len(imported_rows), len(selected_products) if not is_new_product else 0)
     sku_count = int(st.number_input(
-        "作成するSKU数（必須）", min_value=2, max_value=100,
+        _required_label("作成するSKU数（必須）"), min_value=2, max_value=100,
         value=default_count, step=1, key=f"sku_count_{editor_context}",
     ))
     split_axes = st.multiselect(
@@ -969,7 +980,7 @@ def _render_sku_detail_editor(
             st.markdown(f"#### SKU {index + 1}")
             if composition == "新規＋既存":
                 item_type = st.segmented_control(
-                    "商品区分（必須）", ["新規", "既存"], default=default_type,
+                    _required_label("商品区分（必須）"), ["新規", "既存"], default=default_type,
                     key=f"sku_item_type_{editor_context}_{index}",
                 )
             else:
@@ -986,7 +997,7 @@ def _render_sku_detail_editor(
                 if default_label in existing_by_label:
                     st.session_state.setdefault(existing_key, default_label)
                 existing_label = st.selectbox(
-                    "既存商品（必須）", options=list(existing_by_label),
+                    _required_label("既存商品（必須）"), options=list(existing_by_label),
                     format_func=lambda label: label,
                     index=None if not existing_by_label else 0,
                     placeholder="商品名または品番で検索して選択してください",
@@ -1006,7 +1017,7 @@ def _render_sku_detail_editor(
             capacity = existing_values.get("容量", "")
             if item_type == "新規":
                 code_method = st.segmented_control(
-                    "品番の用意方法（必須）",
+                    _required_label("品番の用意方法（必須）"),
                     ["品番を入力する", "品番取得を依頼する"],
                     default=source.get("品番取得方法", "品番を入力する"),
                     key=f"sku_code_method_{editor_context}_{index}",
@@ -1014,11 +1025,11 @@ def _render_sku_detail_editor(
                 sku_code = ""
                 if code_method == "品番を入力する":
                     sku_code = st.text_input(
-                        "品番（必須）", value=source.get("SKU品番", ""),
+                        _required_label("品番（必須）"), value=source.get("SKU品番", ""),
                         key=f"sku_code_{editor_context}_{index}",
                     )
                 sku_name = st.text_input(
-                    "商品名（必須）", value=source.get("商品名", ""),
+                    _required_label("商品名（必須）"), value=source.get("商品名", ""),
                     key=f"sku_name_{editor_context}_{index}",
                 )
             else:
@@ -1039,24 +1050,24 @@ def _render_sku_detail_editor(
                 column_name = "その他の分け方" if axis == "その他" else axis
                 default_value = source.get(column_name, capacity if axis == "容量" else "")
                 axis_values[column_name] = st.text_input(
-                    f"{axis}（SKUの分け方・必須）", value=default_value,
+                    _required_label(f"{axis}（SKUの分け方・必須）"), value=default_value,
                     key=f"sku_axis_{axis}_{editor_context}_{index}",
                 )
             variation_default = source.get("バリエーション名", " / ".join(filter(None, axis_values.values())))
             variation = st.text_input(
-                "バリエーション名（必須）", value=variation_default,
+                _required_label("バリエーション名（必須）"), value=variation_default,
                 key=f"sku_variation_{editor_context}_{index}",
                 help="例：コシヒカリ / 5kg / 10月配送",
             )
             if item_type == "新規":
                 cost_change_mode = "商品代を登録する"
                 product_cost = st.text_input(
-                    "商品代（税込・必須）", value=source.get("商品代（税込）", ""),
+                    _required_label("商品代（税込・必須）"), value=source.get("商品代（税込）", ""),
                     key=f"sku_cost_{editor_context}_{index}",
                 )
             else:
                 cost_change_mode = st.segmented_control(
-                    "商品代（税込・必須）",
+                    _required_label("商品代（税込・必須）"),
                     ["商品代を変更する", "商品代を変更しない"],
                     default=source.get("商品代変更", "商品代を変更しない"),
                     key=f"sku_cost_mode_{editor_context}_{index}",
@@ -1064,7 +1075,7 @@ def _render_sku_detail_editor(
                 product_cost = ""
                 if cost_change_mode == "商品代を変更する":
                     product_cost = st.text_input(
-                        "変更後の商品代（税込・必須）",
+                        _required_label("変更後の商品代（税込・必須）"),
                         value=source.get("商品代（税込）", ""),
                         key=f"sku_cost_{editor_context}_{index}",
                     )
@@ -1231,7 +1242,9 @@ def _save_uploaded_attachments(request_id: str, uploaded_files: list) -> list[Pa
 
 
 def _render_backlog_custom_field(custom_field, field_key: str):
-    label = f"{custom_field.name}（{'必須' if custom_field.required else '任意'}）"
+    label = _required_label(
+        f"{custom_field.name}（{'必須' if custom_field.required else '任意'}）"
+    )
     if custom_field.options:
         option_names = [option.name for option in custom_field.options]
         if custom_field.type_id in {"6", "7"}:
@@ -1417,6 +1430,59 @@ def render_product_request_tab(
             format_func=lambda municipality_id: municipality_names[municipality_id],
             key="request_municipality_id",
         )
+
+    try:
+        active_backlog_configs = backlog_configs_by_municipality_id(
+            _load_backlog_configs(config_spreadsheet_id, str(credentials_path))
+        )
+        issue_types = _load_backlog_issue_types(
+            config_spreadsheet_id, str(credentials_path)
+        )
+    except Exception:
+        active_backlog_configs = {}
+        issue_types = []
+        st.warning("Backlog設定を読み込めません。依頼の保存・起票はできません。")
+
+    target_backlog_config = active_backlog_configs.get(target_municipality_id)
+    oauth_settings = load_oauth_settings()
+    backlog_oauth_linked = False
+    if login_email and target_backlog_config is not None:
+        if not oauth_settings.configured:
+            st.warning("本人名義でのBacklog起票は管理者のOAuth設定完了後に利用できます。")
+        else:
+            try:
+                backlog_oauth_linked = bool(load_refresh_token(
+                    config_spreadsheet_id,
+                    credentials_path,
+                    oauth_settings,
+                    login_email,
+                    target_backlog_config.space_id,
+                ))
+            except Exception:
+                backlog_oauth_linked = False
+
+            if not backlog_oauth_linked:
+                with st.container(border=True):
+                    st.subheader(":material/link: 初回のBacklog連携")
+                    st.warning(
+                        "商品情報を入力する前にBacklog連携を完了してください。"
+                        "連携画面へ移動するため、未保存の入力内容は保持されません。",
+                        icon=":material/warning:",
+                    )
+                    st.link_button(
+                        "Backlogと連携する（初回のみ）",
+                        authorization_url(
+                            oauth_settings,
+                            target_backlog_config.space_id,
+                            login_email,
+                        ),
+                        type="primary",
+                        icon=":material/link:",
+                        width="stretch",
+                    )
+                    st.caption("連携後、自動的にこのフォームへ戻ります。APIキーの入力は不要です。")
+                return
+
     is_new_product = work_category == "新規商品登録"
     product_shape = "単品"
     registration_source_file = None
@@ -1576,7 +1642,7 @@ def render_product_request_tab(
                 )
             else:
                 business_name = st.text_input(
-                    "事業者名（必須）", key="request_new_business_name"
+                    _required_label("事業者名（必須）"), key="request_new_business_name"
                 ).strip()
             new_product = _new_product_reference(
                 target_municipality_id,
@@ -1589,19 +1655,6 @@ def render_product_request_tab(
                 business_name=business_name,
             )]
 
-    try:
-        active_backlog_configs = backlog_configs_by_municipality_id(
-            _load_backlog_configs(config_spreadsheet_id, str(credentials_path))
-        )
-        issue_types = _load_backlog_issue_types(
-            config_spreadsheet_id, str(credentials_path)
-        )
-    except Exception:
-        active_backlog_configs = {}
-        issue_types = []
-        st.warning("Backlog設定を読み込めません。依頼の保存・起票はできません。")
-
-    target_backlog_config = active_backlog_configs.get(target_municipality_id)
     municipality_issue_types = [
         issue_type for issue_type in issue_types
         if issue_type.municipality_id == target_municipality_id
@@ -1685,7 +1738,7 @@ def render_product_request_tab(
             new_product_code_method = None
             if product_shape != "SKU展開":
                 new_product_code_method = st.segmented_control(
-                    "品番の用意方法（必須）",
+                    _required_label("品番の用意方法（必須）"),
                     ["品番を入力する", "品番取得を依頼する"],
                     default="品番を入力する",
                     key="new_product_code_method",
@@ -1848,7 +1901,7 @@ def render_product_request_tab(
                         with st.container(border=True):
                             st.markdown(f"**{_product_label(product)}**")
                             cost_change_mode = st.segmented_control(
-                                "商品代（税込・必須）",
+                                _required_label("商品代（税込・必須）"),
                                 ["商品代を変更する", "商品代を変更しない"],
                                 default=None,
                                 required=True,
@@ -1858,7 +1911,7 @@ def render_product_request_tab(
                             values = {"商品代変更": cost_change_mode or ""}
                             if cost_change_mode == "商品代を変更する":
                                 values["商品代（税込）"] = st.text_input(
-                                    "変更後の商品代（税込・必須）",
+                                    _required_label("変更後の商品代（税込・必須）"),
                                     placeholder="半角数字で入力",
                                     key=f"correction_cost_{editor_context}_{product_index}",
                                     persist_state="session",
@@ -1885,7 +1938,7 @@ def render_product_request_tab(
                         with st.container(border=True):
                             st.markdown(f"**{_product_label(product)}**")
                             code_method = st.segmented_control(
-                                "品番の用意方法（必須）",
+                                _required_label("品番の用意方法（必須）"),
                                 ["新品番を入力する", "品番取得を依頼する"],
                                 default="新品番を入力する",
                                 key=f"compound_code_method_{editor_context}_{product_index}",
@@ -1920,7 +1973,7 @@ def render_product_request_tab(
                     )
                     st.session_state.setdefault(cost_key, imported_extras.get("商品代（税込）", ""))
                     stock_mode = st.segmented_control(
-                        "在庫数（必須）",
+                        _required_label("在庫数（必須）"),
                         options=["数量を入力", "無制限"],
                         key=stock_mode_key,
                         persist_state="session",
@@ -1935,13 +1988,13 @@ def render_product_request_tab(
                             persist_state="session",
                         )
                     product_cost = st.text_input(
-                        "商品代（税込・必須）",
+                        _required_label("商品代（税込・必須）"),
                         placeholder="半角数字で入力",
                         key=cost_key,
                         persist_state="session",
                     )
                     shipping_period_mode = st.segmented_control(
-                        "発送可能時期（必須）",
+                        _required_label("発送可能時期（必須）"),
                         ["通年", "時期指定あり"],
                         default="通年",
                         key=f"shipping_period_mode_{editor_context}",
@@ -2669,29 +2722,8 @@ def render_product_request_tab(
                 ] + list(forced_notification_ids)
             ))
 
-            if login_email and target_backlog_config:
-                oauth_settings = load_oauth_settings()
-                if not oauth_settings.configured:
-                    st.warning("本人名義でのBacklog起票は管理者のOAuth設定完了後に利用できます。")
-                else:
-                    try:
-                        linked = bool(load_refresh_token(
-                            config_spreadsheet_id, credentials_path, oauth_settings,
-                            login_email, target_backlog_config.space_id,
-                        ))
-                    except Exception:
-                        linked = False
-                    if linked:
-                        st.success("Backlog本人連携済み：課題の登録者はログイン中の本人になります。")
-                    else:
-                        st.link_button(
-                            "Backlogと連携する（初回のみ）",
-                            authorization_url(
-                                oauth_settings, target_backlog_config.space_id, login_email
-                            ),
-                            type="primary", icon=":material/link:", width="stretch",
-                        )
-                        st.caption("連携後にこの画面へ戻ります。APIキーの発行・入力は不要です。")
+            if backlog_oauth_linked:
+                st.success("Backlog本人連携済み：課題の登録者はログイン中の本人になります。")
         else:
             requester = st.text_input("依頼者", key="requester")
         try:
