@@ -150,15 +150,21 @@ STATIC_FIXED_VALUES = {
 }
 CORRECTION_TYPES = (
     "複合的な修正",
-    "寄附額変更",
+    "寄附額変更（商品代変更アリ）",
+    "寄附額変更（商品代変更ナシ）",
     "在庫数変更",
     "表示・非表示切り替え",
     "商品名・キャッチコピー修正",
     "発送期日・納期・受付期間修正",
     "商品説明文・容量変更",
 )
+DONATION_CORRECTION_TYPES = {
+    "寄附額変更（商品代変更アリ）",
+    "寄附額変更（商品代変更ナシ）",
+}
 CORRECTION_TYPE_COLUMNS = {
-    "寄附額変更": {DONATION_COLUMN},
+    "寄附額変更（商品代変更アリ）": {DONATION_COLUMN},
+    "寄附額変更（商品代変更ナシ）": {DONATION_COLUMN},
     "在庫数変更": set(),
     "表示・非表示切り替え": {"（必須）表示有無"},
     "商品名・キャッチコピー修正": {PRODUCT_NAME_COLUMN, "キャッチコピー"},
@@ -1845,7 +1851,7 @@ def render_product_request_tab(
         )
         backlog_only_type = (
             not is_new_product
-            and correction_type in {"寄附額変更", "在庫数変更"}
+            and correction_type in DONATION_CORRECTION_TYPES | {"在庫数変更"}
         )
         if selected_fields or temperature_change_requested or allergy_change_requested or backlog_only_type:
             system_fixed_fields = _system_fixed_fields(form_fields)
@@ -1894,29 +1900,28 @@ def render_product_request_tab(
                 sku_composition = ""
                 sku_split_axes = []
                 correction_backlog_values: dict[int, dict[str, str]] = {}
-                if not is_new_product:
+                if correction_type == "寄附額変更（商品代変更アリ）":
                     st.subheader("商品代の変更")
-                    st.caption("すべての修正依頼で、商品代を変更するか変更しないかを選択してください。")
+                    st.caption("寄附額とあわせて変更後の商品代を入力してください。")
                     for product_index, product in enumerate(selected_products):
                         with st.container(border=True):
                             st.markdown(f"**{_product_label(product)}**")
-                            cost_change_mode = st.segmented_control(
-                                _required_label("商品代（税込・必須）"),
-                                ["商品代を変更する", "商品代を変更しない"],
-                                default=None,
-                                required=True,
-                                key=f"correction_cost_mode_{editor_context}_{product_index}",
+                            product_cost = st.text_input(
+                                _required_label("変更後の商品代（税込・必須）"),
+                                placeholder="半角数字で入力",
+                                key=f"correction_cost_value_{editor_context}_{product_index}",
                                 persist_state="session",
                             )
-                            values = {"商品代変更": cost_change_mode or ""}
-                            if cost_change_mode == "商品代を変更する":
-                                values["商品代（税込）"] = st.text_input(
-                                    _required_label("変更後の商品代（税込・必須）"),
-                                    placeholder="半角数字で入力",
-                                    key=f"correction_cost_{editor_context}_{product_index}",
-                                    persist_state="session",
-                                )
+                            values = {
+                                "商品代変更": "商品代を変更する",
+                                "商品代（税込）": product_cost,
+                            }
                             correction_backlog_values[product_index] = values
+                elif correction_type == "寄附額変更（商品代変更ナシ）":
+                    correction_backlog_values = {
+                        product_index: {"商品代変更": "商品代を変更しない"}
+                        for product_index, _ in enumerate(selected_products)
+                    }
                 if not is_new_product and product_shape == "定期便":
                     st.subheader("定期便のお届け内容")
                     subscription_detail_editor = _render_subscription_detail_editor(
@@ -2064,7 +2069,7 @@ def render_product_request_tab(
                             selected_business_name=business_name,
                             imported_rows=sku_rows,
                         )
-                elif correction_type in {"寄附額変更", "在庫数変更"}:
+                elif correction_type in DONATION_CORRECTION_TYPES | {"在庫数変更"}:
                     st.subheader("変更後の商品管理情報")
                     for product_index, product in enumerate(selected_products):
                         with st.container(border=True):
@@ -2193,24 +2198,20 @@ def render_product_request_tab(
                                 input_errors.append(f"{_product_label(product)}: 新品番")
                             else:
                                 new_lines.extend(_build_management_code_lines(product, new_code))
-                if not is_new_product:
+                if correction_type == "寄附額変更（商品代変更アリ）":
                     for product_index, product in enumerate(selected_products):
                         values = correction_backlog_values.get(product_index, {})
-                        cost_mode = values.get("商品代変更", "")
-                        if not cost_mode:
-                            input_errors.append(f"{_product_label(product)}: 商品代を変更する・しない")
-                        elif cost_mode == "商品代を変更する":
-                            cost_value = values.get("商品代（税込）", "").strip()
-                            if not _is_nonnegative_integer(cost_value):
-                                input_errors.append(f"{_product_label(product)}: 商品代（税込）")
-                            else:
-                                new_lines.append(ProductCorrectionLine(
-                                    product=product,
-                                    field_name=f"{BACKLOG_ONLY_PREFIX}商品代（税込）",
-                                    before_value=product.source_values().get("商品代（税込）", ""),
-                                    after_value=cost_value,
-                                    display_name="商品代",
-                                ))
+                        cost_value = values.get("商品代（税込）", "").strip()
+                        if not _is_nonnegative_integer(cost_value):
+                            input_errors.append(f"{_product_label(product)}: 商品代（税込）")
+                        else:
+                            new_lines.append(ProductCorrectionLine(
+                                product=product,
+                                field_name=f"{BACKLOG_ONLY_PREFIX}商品代（税込）",
+                                before_value=product.source_values().get("商品代（税込）", ""),
+                                after_value=cost_value,
+                                display_name="商品代",
+                            ))
                 if is_new_product:
                     if stock_quantity != "無制限" and not _is_nonnegative_integer(stock_quantity):
                         input_errors.append("新規商品: 在庫数")
@@ -2353,7 +2354,7 @@ def render_product_request_tab(
                                 after_value=detail_text,
                                 display_name=f"SKU {index}（Backlogのみ）",
                             ))
-                elif correction_type in {"寄附額変更", "在庫数変更"}:
+                elif correction_type in DONATION_CORRECTION_TYPES | {"在庫数変更"}:
                     for product_index, product in enumerate(selected_products):
                         values = correction_backlog_values.get(product_index, {})
                         if correction_type == "在庫数変更":
