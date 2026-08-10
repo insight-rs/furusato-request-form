@@ -851,6 +851,133 @@ def _render_selected_product_preview(selected_products: list) -> None:
     )
 
 
+def _render_subscription_detail_editor(*, editor_context: str, imported_rows=None):
+    """選択した配送回数に合わせて定期便明細を固定行で表示する。"""
+    imported_rows = list(imported_rows or [])
+    default_count = max(2, len(imported_rows))
+    delivery_count = int(st.number_input(
+        "お届け回数（必須）", min_value=2, max_value=36, value=default_count,
+        step=1, key=f"subscription_count_{editor_context}",
+    ))
+    st.caption(f"第1回～第{delivery_count}回の入力欄を表示しています。")
+    rows = []
+    for index in range(delivery_count):
+        source = imported_rows[index] if index < len(imported_rows) else {}
+        rows.append({
+            "お届け回": str(index + 1),
+            "お届け時期": source.get("お届け時期", ""),
+            "お届け内容": source.get("お届け内容", ""),
+            "内容量": source.get("内容量", ""),
+            "数量": source.get("数量", ""),
+            "温度帯": source.get("温度帯", ""),
+            "補足": source.get("補足", ""),
+        })
+    return st.data_editor(
+        pd.DataFrame(rows), hide_index=True, num_rows="fixed",
+        disabled=["お届け回"],
+        column_config={
+            "お届け回": st.column_config.TextColumn("回", pinned=True),
+            "温度帯": st.column_config.SelectboxColumn(
+                "温度帯", options=["", "常温", "冷蔵", "冷凍"]
+            ),
+        },
+        key=f"subscription_detail_{editor_context}_{delivery_count}",
+    )
+
+
+def _render_sku_detail_editor(
+    *, editor_context: str, is_new_product: bool, selected_products: list,
+    municipality_products: list, imported_rows=None,
+):
+    """SKUの構成・分け方・件数を先に決め、SKUごとの商品情報を入力する。"""
+    imported_rows = list(imported_rows or [])
+    if is_new_product:
+        composition = st.segmented_control(
+            "SKUにまとめる商品の構成（必須）",
+            ["新規商品のみ", "既存商品のみ", "新規＋既存"],
+            default="新規商品のみ", required=True,
+            key=f"sku_composition_{editor_context}",
+        )
+    else:
+        composition = "既存商品のみ"
+        st.info("上で選択した既存商品を、1つのSKU商品としてまとめます。")
+
+    default_count = max(2, len(imported_rows), len(selected_products) if not is_new_product else 0)
+    sku_count = int(st.number_input(
+        "作成するSKU数（必須）", min_value=2, max_value=100,
+        value=default_count, step=1, key=f"sku_count_{editor_context}",
+    ))
+    split_axes = st.multiselect(
+        "SKUをどの項目で分けますか（複数選択可）",
+        ["品種", "容量", "色", "数量", "配送月", "その他"],
+        default=["容量"], accept_new_options=True,
+        key=f"sku_split_axes_{editor_context}",
+        help="例：品種 → kg数（容量） → 配送月",
+    )
+    if split_axes:
+        st.caption("SKUの分け方：" + " → ".join(split_axes))
+
+    candidates = municipality_products
+    if is_new_product and composition in {"既存商品のみ", "新規＋既存"}:
+        existing_products = st.multiselect(
+            "SKUに含める既存商品（必須）", candidates,
+            format_func=_product_label,
+            placeholder="商品名または品番で検索して選択してください",
+            key=f"sku_existing_products_{editor_context}",
+        )
+    elif not is_new_product:
+        existing_products = selected_products
+    else:
+        existing_products = []
+
+    existing_by_label = {_product_label(product): product for product in candidates}
+    existing_labels = [_product_label(product) for product in existing_products]
+    rows = []
+    for index in range(sku_count):
+        source = imported_rows[index] if index < len(imported_rows) else {}
+        existing_label = existing_labels[index] if index < len(existing_labels) else ""
+        if composition == "既存商品のみ":
+            item_type = "既存"
+        elif composition == "新規商品のみ":
+            item_type = "新規"
+        else:
+            item_type = "既存" if existing_label else "新規"
+        existing_product = existing_by_label.get(existing_label)
+        existing_values = existing_product.source_values() if existing_product else {}
+        rows.append({
+            "No.": index + 1, "商品区分": source.get("商品区分", item_type),
+            "既存商品": source.get("既存商品", existing_label),
+            "品番取得方法": source.get(
+                "品番取得方法", "品番を入力する" if item_type == "新規" else "既存品番を使用"
+            ),
+            "SKU品番": source.get("SKU品番", existing_values.get("管理コード", "")),
+            "商品名": source.get("商品名", existing_product.product_name if existing_product else ""),
+            "バリエーション名": source.get("バリエーション名", ""),
+            "品種": source.get("品種", ""), "容量": source.get("容量", ""),
+            "色": source.get("色", ""), "数量": source.get("数量", ""),
+            "配送月": source.get("配送月", ""),
+            "その他の分け方": source.get("その他の分け方", ""),
+            "商品代（税込）": source.get("商品代（税込）", ""),
+            "寄附額": source.get("寄附額", ""), "在庫数": source.get("在庫数", ""),
+            "温度帯": source.get("温度帯", ""), "補足": source.get("補足", ""),
+        })
+    editor = st.data_editor(
+        pd.DataFrame(rows), hide_index=True, num_rows="fixed",
+        disabled=["No."],
+        column_config={
+            "No.": st.column_config.NumberColumn("No.", pinned=True),
+            "商品区分": st.column_config.SelectboxColumn("商品区分", options=["新規", "既存"]),
+            "既存商品": st.column_config.SelectboxColumn("既存商品", options=[""] + list(existing_by_label)),
+            "品番取得方法": st.column_config.SelectboxColumn(
+                "品番取得方法", options=["既存品番を使用", "品番を入力する", "品番取得を依頼する"]
+            ),
+            "温度帯": st.column_config.SelectboxColumn("温度帯", options=["", "常温", "冷蔵", "冷凍"]),
+        },
+        key=f"sku_detail_{editor_context}_{sku_count}",
+    )
+    return editor, composition, split_axes
+
+
 def _allergy_display_name(field: RequestFormField) -> str:
     return field.label.removeprefix(ALLERGY_PREFIX)
 
@@ -1577,7 +1704,22 @@ def render_product_request_tab(
                 new_product_extra_editor = None
                 subscription_detail_editor = None
                 sku_detail_editor = None
+                sku_composition = ""
+                sku_split_axes = []
                 correction_backlog_values: dict[int, dict[str, str]] = {}
+                if not is_new_product and product_shape == "定期便":
+                    st.subheader("定期便のお届け内容")
+                    subscription_detail_editor = _render_subscription_detail_editor(
+                        editor_context=editor_context,
+                    )
+                elif not is_new_product and product_shape == "SKU展開":
+                    st.subheader("既存商品のSKU構成")
+                    sku_detail_editor, sku_composition, sku_split_axes = _render_sku_detail_editor(
+                        editor_context=editor_context,
+                        is_new_product=False,
+                        selected_products=selected_products,
+                        municipality_products=municipality_products,
+                    )
                 if code_change_requested:
                     st.subheader("品番変更")
                     st.caption("新規登録と同様に、新品番を入力するか品番取得を依頼してください。")
@@ -1683,45 +1825,23 @@ def render_product_request_tab(
                             and imported_registration.product_shape == "定期便"
                             else []
                         )
-                        if not subscription_rows:
-                            subscription_rows = [
-                                {"お届け回": str(index), "お届け時期": "", "お届け内容": "", "内容量": "", "数量": "", "温度帯": "", "補足": ""}
-                                for index in range(1, 3)
-                            ]
-                        subscription_detail_editor = st.data_editor(
-                            pd.DataFrame(subscription_rows),
-                            hide_index=True,
-                            num_rows="dynamic",
-                            column_config={
-                                "温度帯": st.column_config.SelectboxColumn(
-                                    "温度帯", options=["", "常温", "冷蔵", "冷凍"]
-                                )
-                            },
-                            key=f"subscription_detail_{editor_context}",
+                        subscription_detail_editor = _render_subscription_detail_editor(
+                            editor_context=editor_context, imported_rows=subscription_rows,
                         )
                     elif product_shape == "SKU展開":
-                        st.subheader("SKU一覧")
+                        st.subheader("SKU構成と商品一覧")
                         sku_rows = (
                             imported_registration.sku_rows
                             if imported_registration is not None
                             and imported_registration.product_shape == "SKU展開"
                             else []
                         )
-                        if not sku_rows:
-                            sku_rows = [
-                                {"SKU品番": "", "バリエーション名": "", "選択肢1": "", "選択肢2": "", "商品代（税込）": "", "寄附額": "", "在庫数": "", "温度帯": "", "補足": ""}
-                                for _ in range(2)
-                            ]
-                        sku_detail_editor = st.data_editor(
-                            pd.DataFrame(sku_rows),
-                            hide_index=True,
-                            num_rows="dynamic",
-                            column_config={
-                                "温度帯": st.column_config.SelectboxColumn(
-                                    "温度帯", options=["", "常温", "冷蔵", "冷凍"]
-                                )
-                            },
-                            key=f"sku_detail_{editor_context}",
+                        sku_detail_editor, sku_composition, sku_split_axes = _render_sku_detail_editor(
+                            editor_context=editor_context,
+                            is_new_product=True,
+                            selected_products=selected_products,
+                            municipality_products=municipality_products,
+                            imported_rows=sku_rows,
                         )
                 elif correction_type in {"金額変更", "在庫数変更"}:
                     st.subheader("変更後の商品管理情報")
@@ -1949,21 +2069,41 @@ def render_product_request_tab(
                         ]
                         if len(sku_rows_for_save) < 2:
                             input_errors.append("SKU展開: 2件以上のSKU")
+                        if not sku_split_axes:
+                            input_errors.append("SKU展開: SKUを分ける項目")
+                        new_lines.append(ProductCorrectionLine(
+                            product=registration_product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}SKU設定",
+                            before_value="",
+                            after_value=(
+                                f"構成：{sku_composition} ／ SKU数：{len(sku_rows_for_save)} ／ "
+                                f"分け方：{' → '.join(sku_split_axes)}"
+                            ),
+                            display_name="SKU設定（Backlogのみ）",
+                        ))
                         for index, row in enumerate(sku_rows_for_save, start=1):
-                            if not row.get("SKU品番") or not row.get("バリエーション名"):
-                                input_errors.append(f"SKU展開: SKU{index}の品番・バリエーション名")
+                            if row.get("商品区分") == "新規" and row.get("品番取得方法") != "品番取得を依頼する" and not row.get("SKU品番"):
+                                input_errors.append(f"SKU展開: SKU{index}の品番または品番取得依頼")
+                            if not row.get("商品名") or not row.get("バリエーション名"):
+                                input_errors.append(f"SKU展開: SKU{index}の商品名・バリエーション名")
+                            detail_text = " ／ ".join(
+                                f"{label}：{row.get(column)}"
+                                for label, column in (
+                                    ("区分", "商品区分"), ("既存商品", "既存商品"),
+                                    ("品番取得", "品番取得方法"), ("品番", "SKU品番"),
+                                    ("商品名", "商品名"), ("バリエーション", "バリエーション名"),
+                                    ("品種", "品種"), ("容量", "容量"), ("色", "色"),
+                                    ("数量", "数量"), ("配送月", "配送月"),
+                                    ("その他", "その他の分け方"), ("商品代（税込）", "商品代（税込）"),
+                                    ("寄附額", "寄附額"), ("在庫数", "在庫数"),
+                                    ("温度帯", "温度帯"), ("補足", "補足"),
+                                ) if row.get(column)
+                            )
                             new_lines.append(ProductCorrectionLine(
                                 product=registration_product,
                                 field_name=f"{BACKLOG_ONLY_PREFIX}SKU{index}",
                                 before_value="",
-                                after_value="｜".join(
-                                    filter(None, (
-                                        row.get("SKU品番"), row.get("バリエーション名"),
-                                        row.get("選択肢1"), row.get("選択肢2"),
-                                        row.get("商品代（税込）"), row.get("寄附額"),
-                                        row.get("在庫数"), row.get("温度帯"), row.get("補足"),
-                                    ))
-                                ),
+                                after_value=detail_text,
                                 display_name=f"SKU {index}（Backlogのみ）",
                             ))
                 elif correction_type in {"金額変更", "在庫数変更"}:
@@ -2034,6 +2174,65 @@ def render_product_request_tab(
                                             display_name="商品名",
                                             column_number=product.source_column_number(PRODUCT_NAME_COLUMN),
                                         ))
+                if not is_new_product and product_shape == "定期便" and subscription_detail_editor is not None:
+                    detail_product = selected_products[0]
+                    rows = [
+                        {key: _table_text(value) for key, value in row.items()}
+                        for _, row in subscription_detail_editor.iterrows()
+                    ]
+                    for index, row in enumerate(rows, start=1):
+                        if not row.get("お届け時期") or not row.get("お届け内容"):
+                            input_errors.append(f"定期便: 第{index}回のお届け時期・内容")
+                        new_lines.append(ProductCorrectionLine(
+                            product=detail_product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}定期便第{index}回",
+                            before_value="",
+                            after_value=" ／ ".join(
+                                f"{label}：{row.get(column)}"
+                                for label, column in (
+                                    ("時期", "お届け時期"), ("内容", "お届け内容"),
+                                    ("内容量", "内容量"), ("数量", "数量"),
+                                    ("温度帯", "温度帯"), ("補足", "補足"),
+                                ) if row.get(column)
+                            ),
+                            display_name=f"定期便 第{index}回（Backlogのみ）",
+                        ))
+                elif not is_new_product and product_shape == "SKU展開" and sku_detail_editor is not None:
+                    detail_product = selected_products[0]
+                    rows = [
+                        {key: _table_text(value) for key, value in row.items()}
+                        for _, row in sku_detail_editor.iterrows()
+                    ]
+                    if not sku_split_axes:
+                        input_errors.append("SKU展開: SKUを分ける項目")
+                    new_lines.append(ProductCorrectionLine(
+                        product=detail_product,
+                        field_name=f"{BACKLOG_ONLY_PREFIX}SKU設定",
+                        before_value="",
+                        after_value=f"既存商品のみ ／ SKU数：{len(rows)} ／ 分け方：{' → '.join(sku_split_axes)}",
+                        display_name="SKU設定（Backlogのみ）",
+                    ))
+                    for index, row in enumerate(rows, start=1):
+                        if not row.get("既存商品"):
+                            input_errors.append(f"SKU展開: SKU{index}の既存商品")
+                        new_lines.append(ProductCorrectionLine(
+                            product=detail_product,
+                            field_name=f"{BACKLOG_ONLY_PREFIX}SKU{index}",
+                            before_value="",
+                            after_value=" ／ ".join(
+                                f"{label}：{row.get(column)}"
+                                for label, column in (
+                                    ("既存商品", "既存商品"), ("品番", "SKU品番"),
+                                    ("商品名", "商品名"), ("バリエーション", "バリエーション名"),
+                                    ("品種", "品種"), ("容量", "容量"), ("色", "色"),
+                                    ("数量", "数量"), ("配送月", "配送月"),
+                                    ("その他", "その他の分け方"), ("商品代（税込）", "商品代（税込）"),
+                                    ("寄附額", "寄附額"), ("在庫数", "在庫数"),
+                                    ("温度帯", "温度帯"), ("補足", "補足"),
+                                ) if row.get(column)
+                            ),
+                            display_name=f"SKU {index}（Backlogのみ）",
+                        ))
                 if edited_temperature_values is not None:
                     temperature_lines, temperature_errors = _build_temperature_change_lines(
                         products=selected_products,

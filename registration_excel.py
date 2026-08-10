@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+from copy import copy
 from io import BytesIO
+from pathlib import Path
 from typing import Iterable
 
 from openpyxl import Workbook, load_workbook
@@ -18,6 +21,7 @@ from choice_reference import load_choice_categories, load_local_product_standard
 TEMPLATE_ID = "FURUSATO-CHOICE-REGISTRATION"
 TEMPLATE_VERSION = "1.0"
 PRODUCT_SHAPES = ("単品", "定期便", "SKU展開")
+LEGACY_TEMPLATE_PATH = Path(__file__).resolve().parent / "config" / "legacy_registration_template.b64"
 
 NOULESS_REFERENCE_FIELDS = (
     ("商品代（税込）", "必須", ""),
@@ -94,6 +98,87 @@ def _add_list_validation(sheet, cell_ref: str, options: list[str]) -> None:
         validation.errorTitle = "入力内容を確認してください"
         sheet.add_data_validation(validation)
         validation.add(cell_ref)
+
+
+def _attach_original_application_form(workbook, choice_values, extra_values):
+    """共通申請書の書式を保った先頭シートを追加し、認識可能な値を反映する。"""
+    if not LEGACY_TEMPLATE_PATH.exists():
+        return workbook
+    legacy = load_workbook(BytesIO(base64.b64decode(LEGACY_TEMPLATE_PATH.read_text(encoding="ascii"))))
+    form = legacy.active
+    form.title = "新規返礼品申込フォーム"
+    # 提供された記入例を空テンプレート化する。書式・結合・数式は維持する。
+    input_cells = (
+        "H6", "H8", "J10", "J11", "J13", "J15", "V15", "D18", "J21", "P21", "V21",
+        "D22", "D24", "D28", "J28", "J31", "J32", "V32", "J34", "V34", "J36", "J38",
+        "J39", "V39", "J41", "V41", "J43", "T43", "J46", "N46", "R46", "V46", "Y46",
+        "J48", "N49", "V49", "J51", "N52", "V52", "N54", "T54", "J57", "D60", "H75",
+    )
+    for coordinate in input_cells:
+        form[coordinate] = None
+    for row in range(68, 96):
+        form[f"E{row}"] = None
+
+    def value(*columns):
+        return next((normalize(choice_values.get(column, "")) for column in columns if normalize(choice_values.get(column, ""))), "")
+
+    mapped = {
+        "H6": value("site business"),
+        "J10": value("管理コード"),
+        "J13": value("（必須）お礼の品名"),
+        "J15": value("（条件付き必須）寄附額", "寄附額"),
+        "V15": normalize(extra_values.get("商品代（税込）", "")),
+        "D18": value("容量"),
+        "D22": value("キャッチコピー"),
+        "D24": value("説明"),
+        "J28": value("消費期限"),
+        "J31": value("原材料名"),
+        "J38": value("地場産品類型"),
+        "J41": value("温度帯"),
+        "J57": normalize(extra_values.get("在庫数", "")),
+    }
+    for coordinate, stored in mapped.items():
+        if stored:
+            form[coordinate] = stored
+
+    # アレルギーは〇表記へ戻す。
+    allergy_row_by_name = {
+        normalize(form[f"C{row}"].value): row for row in range(68, 96)
+        if normalize(form[f"C{row}"].value)
+    }
+    for column, stored in choice_values.items():
+        if "アレルギー" not in column or normalize(stored) not in {"1", "あり", "○", "〇"}:
+            continue
+        name = column.split("：")[-1].replace("フラグ", "").strip("（）() ")
+        if name in allergy_row_by_name:
+            form[f"E{allergy_row_by_name[name]}"] = "〇"
+
+    # 独自の全項目・定期便・SKUシートを後ろに付け、テンプレート外項目も欠落させない。
+    for source in workbook.worksheets:
+        target = legacy.create_sheet(source.title)
+        target.sheet_format = copy(source.sheet_format)
+        target.sheet_properties = copy(source.sheet_properties)
+        target.freeze_panes = source.freeze_panes
+        target.sheet_view.showGridLines = source.sheet_view.showGridLines
+        for key, dimension in source.column_dimensions.items():
+            target.column_dimensions[key] = copy(dimension)
+        for key, dimension in source.row_dimensions.items():
+            target.row_dimensions[key] = copy(dimension)
+        for row in source.iter_rows():
+            for cell in row:
+                copied = target[cell.coordinate]
+                copied.value = cell.value
+                if cell.has_style:
+                    copied._style = copy(cell._style)
+                if cell.number_format:
+                    copied.number_format = cell.number_format
+                copied.alignment = copy(cell.alignment)
+        for merged in source.merged_cells.ranges:
+            target.merge_cells(str(merged))
+        for validation in source.data_validations.dataValidation:
+            target.add_data_validation(copy(validation))
+        target.auto_filter.ref = source.auto_filter.ref
+    return legacy
 
 
 def build_registration_template(
@@ -218,16 +303,27 @@ def build_registration_template(
         _style_sheet(detail, {"A": 12, "B": 20, "C": 42, "D": 22, "E": 12, "F": 14, "G": 45})
     elif product_shape == "SKU展開":
         detail = workbook.create_sheet("SKU明細")
-        detail_headers = ["SKU品番", "バリエーション名", "選択肢1", "選択肢2", "商品代（税込）", "寄附額", "在庫数", "温度帯", "補足"]
+        detail_headers = [
+            "商品区分", "既存商品", "品番取得方法", "SKU品番", "商品名", "バリエーション名",
+            "品種", "容量", "色", "数量", "配送月", "その他の分け方",
+            "商品代（税込）", "寄附額", "在庫数", "温度帯", "補足",
+        ]
         detail.append(detail_headers)
         _style_header(detail[1])
         for values in sku_rows or [{} for _ in range(30)]:
             detail.append([values.get(header, "") for header in detail_headers])
             for cell in detail[detail.max_row]:
                 cell.fill = yellow
-        _add_list_validation(detail, "H2:H200", ["常温", "冷蔵", "冷凍"])
-        _style_sheet(detail, {"A": 18, "B": 30, "C": 22, "D": 22, "E": 18, "F": 16, "G": 14, "H": 14, "I": 42})
+        _add_list_validation(detail, "A2:A200", ["新規", "既存"])
+        _add_list_validation(detail, "C2:C200", ["品番を入力する", "品番取得を依頼する"])
+        _add_list_validation(detail, "P2:P200", ["常温", "冷蔵", "冷凍"])
+        _style_sheet(detail, {
+            "A": 12, "B": 38, "C": 22, "D": 18, "E": 34, "F": 26,
+            "G": 18, "H": 16, "I": 14, "J": 12, "K": 16, "L": 24,
+            "M": 18, "N": 16, "O": 14, "P": 14, "Q": 42,
+        })
 
+    workbook = _attach_original_application_form(workbook, choice_values, extra_values)
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
