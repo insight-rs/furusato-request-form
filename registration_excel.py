@@ -194,6 +194,7 @@ def build_registration_template(
 
     if product_shape not in PRODUCT_SHAPES:
         raise ValueError(f"未対応の商品形態です: {product_shape}")
+    fields = list(fields)
     choice_values = choice_values or {}
     extra_values = extra_values or {}
     workbook = Workbook()
@@ -304,7 +305,7 @@ def build_registration_template(
     elif product_shape == "SKU展開":
         detail = workbook.create_sheet("SKU明細")
         detail_headers = [
-            "商品区分", "既存商品", "品番取得方法", "SKU品番", "商品名", "バリエーション名",
+            "登録区分", "商品区分", "既存商品", "品番取得方法", "SKU品番", "商品名", "バリエーション名",
             "品種", "容量", "色", "数量", "配送月", "その他の分け方",
             "商品代（税込）", "寄附額", "在庫数", "温度帯", "補足",
         ]
@@ -314,14 +315,53 @@ def build_registration_template(
             detail.append([values.get(header, "") for header in detail_headers])
             for cell in detail[detail.max_row]:
                 cell.fill = yellow
-        _add_list_validation(detail, "A2:A200", ["新規", "既存"])
-        _add_list_validation(detail, "C2:C200", ["品番を入力する", "品番取得を依頼する"])
-        _add_list_validation(detail, "P2:P200", ["常温", "冷蔵", "冷凍"])
+        _add_list_validation(detail, "B2:B200", ["新規", "既存"])
+        _add_list_validation(detail, "D2:D200", ["品番を入力する", "品番取得を依頼する"])
+        _add_list_validation(detail, "Q2:Q200", ["常温", "冷蔵", "冷凍"])
         _style_sheet(detail, {
-            "A": 12, "B": 38, "C": 22, "D": 18, "E": 34, "F": 26,
-            "G": 18, "H": 16, "I": 14, "J": 12, "K": 16, "L": 24,
-            "M": 18, "N": 16, "O": 14, "P": 14, "Q": 42,
+            "A": 20, "B": 12, "C": 38, "D": 22, "E": 18, "F": 34, "G": 26,
+            "H": 18, "I": 16, "J": 14, "K": 12, "L": 16, "M": 24,
+            "N": 18, "O": 16, "P": 14, "Q": 14, "R": 42,
         })
+
+        sku_master = workbook.create_sheet("SKUチョイスマスタ")
+        field_list = list(fields)
+        master_headers = ["SKU No.", "登録区分", "元商品区分"] + [field.source_column for field in field_list]
+        sku_master.append(master_headers)
+        _style_header(sku_master[1])
+        for index, row in enumerate(sku_rows or [], start=1):
+            inherited = row.get("チョイスマスタ値", {})
+            if not isinstance(inherited, dict):
+                inherited = {}
+            master_values = dict(choice_values)
+            if row.get("商品区分") == "既存":
+                master_values.update({key: normalize(value) for key, value in inherited.items()})
+            sku_code = normalize(row.get("SKU品番", ""))
+            sku_name = normalize(row.get("商品名", ""))
+            for column in ("管理コード", "連携コード"):
+                if sku_code:
+                    master_values[column] = sku_code
+            if sku_name:
+                master_values["（必須）お礼の品名"] = (
+                    f"{sku_name} {sku_code}" if sku_code and not sku_name.endswith(sku_code) else sku_name
+                )
+            if row.get("寄附額"):
+                master_values["（条件付き必須）寄附額"] = normalize(row.get("寄附額"))
+            if row.get("容量"):
+                master_values["容量"] = normalize(row.get("容量"))
+            temperature = normalize(row.get("温度帯", ""))
+            for label, column in {
+                "常温": "常温配送フラグ", "冷蔵": "冷蔵配送フラグ", "冷凍": "冷凍配送フラグ"
+            }.items():
+                if temperature:
+                    master_values[column] = "1" if temperature == label else "0"
+            sku_master.append([
+                index, "新規登録（SKU）", normalize(row.get("商品区分", "")),
+                *[master_values.get(field.source_column, "") for field in field_list],
+            ])
+        sku_master.freeze_panes = "D2"
+        sku_master.auto_filter.ref = f"A1:{sku_master.cell(1, len(master_headers)).column_letter}{max(1, sku_master.max_row)}"
+        _style_sheet(sku_master, {"A": 12, "B": 20, "C": 14})
 
     workbook = _attach_original_application_form(workbook, choice_values, extra_values)
     output = BytesIO()

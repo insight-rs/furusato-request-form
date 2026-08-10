@@ -887,9 +887,9 @@ def _render_subscription_detail_editor(*, editor_context: str, imported_rows=Non
 
 def _render_sku_detail_editor(
     *, editor_context: str, is_new_product: bool, selected_products: list,
-    municipality_products: list, imported_rows=None,
+    municipality_products: list, selected_business_name: str = "", imported_rows=None,
 ):
-    """SKUの構成・分け方・件数を先に決め、SKUごとの商品情報を入力する。"""
+    """新規・既存を同じカード型フォームで入力し、登録用SKU行へ正規化する。"""
     imported_rows = list(imported_rows or [])
     if is_new_product:
         composition = st.segmented_control(
@@ -917,65 +917,148 @@ def _render_sku_detail_editor(
     if split_axes:
         st.caption("SKUの分け方：" + " → ".join(split_axes))
 
-    candidates = municipality_products
-    if is_new_product and composition in {"既存商品のみ", "新規＋既存"}:
-        existing_products = st.multiselect(
-            "SKUに含める既存商品（必須）", candidates,
-            format_func=_product_label,
-            placeholder="商品名または品番で検索して選択してください",
-            key=f"sku_existing_products_{editor_context}",
+    candidates = [
+        product for product in municipality_products
+        if not selected_business_name or product.business_name == selected_business_name
+    ]
+    if composition in {"既存商品のみ", "新規＋既存"}:
+        st.caption(
+            f"既存商品の選択肢は、事業者「{selected_business_name}」の商品だけを表示します。"
+            if selected_business_name else "先に事業者を選択すると、その事業者の商品だけに絞り込まれます。"
         )
-    elif not is_new_product:
-        existing_products = selected_products
-    else:
-        existing_products = []
-
     existing_by_label = {_product_label(product): product for product in candidates}
-    existing_labels = [_product_label(product) for product in existing_products]
+    initially_selected = [_product_label(product) for product in selected_products if product in candidates]
     rows = []
     for index in range(sku_count):
         source = imported_rows[index] if index < len(imported_rows) else {}
-        existing_label = existing_labels[index] if index < len(existing_labels) else ""
         if composition == "既存商品のみ":
-            item_type = "既存"
+            default_type = "既存"
         elif composition == "新規商品のみ":
-            item_type = "新規"
+            default_type = "新規"
         else:
-            item_type = "既存" if existing_label else "新規"
-        existing_product = existing_by_label.get(existing_label)
-        existing_values = existing_product.source_values() if existing_product else {}
-        rows.append({
-            "No.": index + 1, "商品区分": source.get("商品区分", item_type),
-            "既存商品": source.get("既存商品", existing_label),
-            "品番取得方法": source.get(
-                "品番取得方法", "品番を入力する" if item_type == "新規" else "既存品番を使用"
-            ),
-            "SKU品番": source.get("SKU品番", existing_values.get("管理コード", "")),
-            "商品名": source.get("商品名", existing_product.product_name if existing_product else ""),
-            "バリエーション名": source.get("バリエーション名", ""),
-            "品種": source.get("品種", ""), "容量": source.get("容量", ""),
-            "色": source.get("色", ""), "数量": source.get("数量", ""),
-            "配送月": source.get("配送月", ""),
-            "その他の分け方": source.get("その他の分け方", ""),
-            "商品代（税込）": source.get("商品代（税込）", ""),
-            "寄附額": source.get("寄附額", ""), "在庫数": source.get("在庫数", ""),
-            "温度帯": source.get("温度帯", ""), "補足": source.get("補足", ""),
-        })
-    editor = st.data_editor(
-        pd.DataFrame(rows), hide_index=True, num_rows="fixed",
-        disabled=["No."],
-        column_config={
-            "No.": st.column_config.NumberColumn("No.", pinned=True),
-            "商品区分": st.column_config.SelectboxColumn("商品区分", options=["新規", "既存"]),
-            "既存商品": st.column_config.SelectboxColumn("既存商品", options=[""] + list(existing_by_label)),
-            "品番取得方法": st.column_config.SelectboxColumn(
-                "品番取得方法", options=["既存品番を使用", "品番を入力する", "品番取得を依頼する"]
-            ),
-            "温度帯": st.column_config.SelectboxColumn("温度帯", options=["", "常温", "冷蔵", "冷凍"]),
-        },
-        key=f"sku_detail_{editor_context}_{sku_count}",
-    )
-    return editor, composition, split_axes
+            default_type = source.get("商品区分", "新規")
+        with st.container(border=True):
+            st.markdown(f"#### SKU {index + 1}")
+            if composition == "新規＋既存":
+                item_type = st.segmented_control(
+                    "商品区分（必須）", ["新規", "既存"], default=default_type,
+                    key=f"sku_item_type_{editor_context}_{index}",
+                )
+            else:
+                item_type = default_type
+                st.caption(f"商品区分：{item_type}")
+
+            existing_product = None
+            existing_label = ""
+            if item_type == "既存":
+                default_label = source.get(
+                    "既存商品", initially_selected[index] if index < len(initially_selected) else ""
+                )
+                existing_key = f"sku_existing_product_{editor_context}_{index}"
+                if default_label in existing_by_label:
+                    st.session_state.setdefault(existing_key, default_label)
+                existing_label = st.selectbox(
+                    "既存商品（必須）", options=list(existing_by_label),
+                    format_func=lambda label: label,
+                    index=None if not existing_by_label else 0,
+                    placeholder="商品名または品番で検索して選択してください",
+                    key=existing_key,
+                ) if existing_by_label else ""
+                existing_product = existing_by_label.get(existing_label)
+                if not existing_by_label:
+                    st.warning("選択した事業者に登録済みの商品がありません。")
+
+            existing_values = existing_product.source_values() if existing_product else {}
+            management_code = existing_values.get("管理コード", "")
+            product_name = existing_product.product_name if existing_product else ""
+            donation = (
+                existing_values.get("（条件付き必須）寄附額", "")
+                or existing_values.get("寄附額", "")
+            )
+            capacity = existing_values.get("容量", "")
+            if item_type == "新規":
+                code_method = st.segmented_control(
+                    "品番の用意方法（必須）",
+                    ["品番を入力する", "品番取得を依頼する"],
+                    default=source.get("品番取得方法", "品番を入力する"),
+                    key=f"sku_code_method_{editor_context}_{index}",
+                )
+                sku_code = ""
+                if code_method == "品番を入力する":
+                    sku_code = st.text_input(
+                        "品番（必須）", value=source.get("SKU品番", ""),
+                        key=f"sku_code_{editor_context}_{index}",
+                    )
+                sku_name = st.text_input(
+                    "商品名（必須）", value=source.get("商品名", ""),
+                    key=f"sku_name_{editor_context}_{index}",
+                )
+            else:
+                code_method = "既存品番を使用"
+                sku_code = management_code
+                sku_name = product_name
+                st.text_input(
+                    "品番（既存商品から自動反映）", value=sku_code, disabled=True,
+                    key=f"sku_existing_code_view_{editor_context}_{index}_{sku_code}",
+                )
+                st.text_input(
+                    "商品名（既存商品から自動反映）", value=sku_name, disabled=True,
+                    key=f"sku_existing_name_view_{editor_context}_{index}_{sku_code}",
+                )
+
+            axis_values = {}
+            for axis in split_axes:
+                column_name = "その他の分け方" if axis == "その他" else axis
+                default_value = source.get(column_name, capacity if axis == "容量" else "")
+                axis_values[column_name] = st.text_input(
+                    f"{axis}（SKUの分け方・必須）", value=default_value,
+                    key=f"sku_axis_{axis}_{editor_context}_{index}",
+                )
+            variation_default = source.get("バリエーション名", " / ".join(filter(None, axis_values.values())))
+            variation = st.text_input(
+                "バリエーション名（必須）", value=variation_default,
+                key=f"sku_variation_{editor_context}_{index}",
+                help="例：コシヒカリ / 5kg / 10月配送",
+            )
+            columns = st.columns(3)
+            with columns[0]:
+                product_cost = st.text_input(
+                    "商品代（税込）", value=source.get("商品代（税込）", ""),
+                    key=f"sku_cost_{editor_context}_{index}",
+                )
+            with columns[1]:
+                donation_value = st.text_input(
+                    "寄附額", value=source.get("寄附額", donation),
+                    key=f"sku_donation_{editor_context}_{index}",
+                )
+            with columns[2]:
+                stock = st.text_input(
+                    "在庫数", value=source.get("在庫数", ""),
+                    key=f"sku_stock_{editor_context}_{index}",
+                )
+            temperature = st.selectbox(
+                "温度帯", ["", "常温", "冷蔵", "冷凍"],
+                index=["", "常温", "冷蔵", "冷凍"].index(source.get("温度帯", ""))
+                if source.get("温度帯", "") in ["", "常温", "冷蔵", "冷凍"] else 0,
+                key=f"sku_temperature_{editor_context}_{index}",
+            )
+            note = st.text_area(
+                "SKUごとの補足", value=source.get("補足", ""),
+                key=f"sku_note_{editor_context}_{index}",
+            )
+            row = {
+                "登録区分": "新規登録（SKU）", "商品区分": item_type, "既存商品": existing_label,
+                "品番取得方法": code_method, "SKU品番": sku_code,
+                "商品名": sku_name, "バリエーション名": variation,
+                "品種": "", "容量": "", "色": "", "数量": "", "配送月": "",
+                "その他の分け方": "", "商品代（税込）": product_cost,
+                "寄附額": donation_value, "在庫数": stock,
+                "温度帯": temperature, "補足": note,
+                "チョイスマスタ値": existing_values,
+            }
+            row.update(axis_values)
+            rows.append(row)
+    return pd.DataFrame(rows), composition, split_axes
 
 
 def _allergy_display_name(field: RequestFormField) -> str:
@@ -1719,6 +1802,7 @@ def render_product_request_tab(
                         is_new_product=False,
                         selected_products=selected_products,
                         municipality_products=municipality_products,
+                        selected_business_name=business_name,
                     )
                 if code_change_requested:
                     st.subheader("品番変更")
@@ -1841,6 +1925,7 @@ def render_product_request_tab(
                             is_new_product=True,
                             selected_products=selected_products,
                             municipality_products=municipality_products,
+                            selected_business_name=business_name,
                             imported_rows=sku_rows,
                         )
                 elif correction_type in {"金額変更", "在庫数変更"}:
@@ -2063,7 +2148,10 @@ def render_product_request_tab(
                             ))
                     elif product_shape == "SKU展開" and sku_detail_editor is not None:
                         sku_rows_for_save = [
-                            {key: _table_text(value) for key, value in row.items()}
+                            {
+                                key: (value if key == "チョイスマスタ値" else _table_text(value))
+                                for key, value in row.items()
+                            }
                             for _, row in sku_detail_editor.iterrows()
                             if any(_table_text(value) for value in row.values())
                         ]
@@ -2086,10 +2174,14 @@ def render_product_request_tab(
                                 input_errors.append(f"SKU展開: SKU{index}の品番または品番取得依頼")
                             if not row.get("商品名") or not row.get("バリエーション名"):
                                 input_errors.append(f"SKU展開: SKU{index}の商品名・バリエーション名")
+                            for axis in sku_split_axes:
+                                axis_column = "その他の分け方" if axis == "その他" else axis
+                                if not row.get(axis_column):
+                                    input_errors.append(f"SKU展開: SKU{index}の{axis}")
                             detail_text = " ／ ".join(
                                 f"{label}：{row.get(column)}"
                                 for label, column in (
-                                    ("区分", "商品区分"), ("既存商品", "既存商品"),
+                                    ("登録区分", "登録区分"), ("元商品区分", "商品区分"), ("既存商品", "既存商品"),
                                     ("品番取得", "品番取得方法"), ("品番", "SKU品番"),
                                     ("商品名", "商品名"), ("バリエーション", "バリエーション名"),
                                     ("品種", "品種"), ("容量", "容量"), ("色", "色"),
@@ -2177,7 +2269,10 @@ def render_product_request_tab(
                 if not is_new_product and product_shape == "定期便" and subscription_detail_editor is not None:
                     detail_product = selected_products[0]
                     rows = [
-                        {key: _table_text(value) for key, value in row.items()}
+                        {
+                            key: (value if key == "チョイスマスタ値" else _table_text(value))
+                            for key, value in row.items()
+                        }
                         for _, row in subscription_detail_editor.iterrows()
                     ]
                     for index, row in enumerate(rows, start=1):
@@ -2215,6 +2310,10 @@ def render_product_request_tab(
                     for index, row in enumerate(rows, start=1):
                         if not row.get("既存商品"):
                             input_errors.append(f"SKU展開: SKU{index}の既存商品")
+                        for axis in sku_split_axes:
+                            axis_column = "その他の分け方" if axis == "その他" else axis
+                            if not row.get(axis_column):
+                                input_errors.append(f"SKU展開: SKU{index}の{axis}")
                         new_lines.append(ProductCorrectionLine(
                             product=detail_product,
                             field_name=f"{BACKLOG_ONLY_PREFIX}SKU{index}",
@@ -2222,6 +2321,7 @@ def render_product_request_tab(
                             after_value=" ／ ".join(
                                 f"{label}：{row.get(column)}"
                                 for label, column in (
+                                    ("登録区分", "登録区分"), ("元商品区分", "商品区分"),
                                     ("既存商品", "既存商品"), ("品番", "SKU品番"),
                                     ("商品名", "商品名"), ("バリエーション", "バリエーション名"),
                                     ("品種", "品種"), ("容量", "容量"), ("色", "色"),
