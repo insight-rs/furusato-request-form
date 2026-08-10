@@ -165,3 +165,13 @@ def test_compound_donation_options_control_product_cost_input():
     assert "and COMPOUND_DONATION_WITH_COST_OPTION in selected_change_options" in source
     assert "and COMPOUND_DONATION_WITHOUT_COST_OPTION in selected_change_options" in source
     assert "if donation_with_cost_requested:" in source
+    assert "and not _is_donation_field(field)" in source
+
+
+def test_donation_field_detection_handles_master_label_variants():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    helper = source[source.index("def _is_donation_field"):source.index("def _sort_change_fields")]
+    assert 'field.source_column == POINTS_COLUMN' in helper
+    assert '("必要寄付金額", "寄附額", "寄付額")' in helper

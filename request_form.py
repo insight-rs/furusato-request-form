@@ -273,6 +273,17 @@ def _is_allergy_item_field(field: RequestFormField) -> bool:
     return field.source_column.startswith(ALLERGY_PREFIX)
 
 
+def _is_donation_field(field: RequestFormField) -> bool:
+    """寄附額マスタ列を、列名・日本語表示名の揺れを含めて判定する。"""
+
+    if field.source_column == POINTS_COLUMN:
+        return False
+    text = f"{field.source_column} {field.label}"
+    return field.source_column == DONATION_COLUMN or any(
+        term in text for term in ("必要寄付金額", "寄附額", "寄付額")
+    )
+
+
 def _sort_change_fields(fields: list[RequestFormField]) -> list[RequestFormField]:
     """品番・公開状態を先頭に固定し、アレルギーは専用入力へ分離する。"""
 
@@ -1796,8 +1807,8 @@ def render_product_request_tab(
                         field for field in selectable_fields
                         if field.source_column not in {
                             "（必須）定期配送対応", "（必須）別送対応", "（必須）表示有無",
-                            DONATION_COLUMN,
                         }
+                        and not _is_donation_field(field)
                     ],
                     COMPOUND_DONATION_WITH_COST_OPTION,
                     COMPOUND_DONATION_WITHOUT_COST_OPTION,
@@ -1824,7 +1835,10 @@ def render_product_request_tab(
                         COMPOUND_DONATION_WITHOUT_COST_OPTION,
                     )
                 ):
-                    donation_field = find_request_form_field(form_fields, DONATION_COLUMN)
+                    donation_field = next(
+                        (field for field in visible_fields if _is_donation_field(field)),
+                        None,
+                    )
                     if donation_field is not None:
                         selected_optional_fields.append(donation_field)
             else:
