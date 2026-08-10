@@ -433,7 +433,7 @@ def build_backlog_issue_content(
     request_note, box_url = _split_request_note(request.note)
     if request.request_unit in {"商品単位", "新規商品登録"}:
         if request_note:
-            description_lines.extend(["対応内容・備考：", request_note])
+            description_lines.append(f"対応内容・備考：{request_note}")
     if not display_lines:
         description_lines.append("商品単位の変更はありません。")
     else:
@@ -587,16 +587,17 @@ def build_backlog_issue_content(
                 if normalize(line.image_instruction):
                     image_instructions.append(normalize(line.image_instruction))
             if change_notes:
-                description_lines.extend(["", "補足：", *dict.fromkeys(change_notes)])
+                description_lines.extend([
+                    "", "補足：" + " ／ ".join(dict.fromkeys(change_notes))
+                ])
             # 画像の指示は、商品情報の変更点の最後にまとめる。
             if image_instructions:
                 description_lines.extend([
                     "",
-                    "画像修正指示：",
-                    *dict.fromkeys(image_instructions),
+                    "画像修正指示：" + " ／ ".join(dict.fromkeys(image_instructions)),
                 ])
     if request_note and request.request_unit not in {"商品単位", "新規商品登録"}:
-        description_lines.extend(["", "対応内容・備考：", request_note])
+        description_lines.extend(["", f"対応内容・備考：{request_note}"])
     if box_url:
         description_lines.extend(["", f"BOX URL：{box_url}"])
     return summary, "\n".join(description_lines)
@@ -653,7 +654,7 @@ def build_image_backlog_issue_content(
         ])
         if product.business_name:
             description_lines.append(f"事業者：{product.business_name}")
-        description_lines.extend(["画像修正指示：", *instructions])
+        description_lines.append("画像修正指示：" + " ／ ".join(instructions))
     return summary, "\n".join(description_lines)
 
 
