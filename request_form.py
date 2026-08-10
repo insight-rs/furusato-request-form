@@ -97,6 +97,8 @@ TEMPERATURE_COLUMNS = {
 }
 TEMPERATURE_CHANGE_OPTION = "温度帯"
 ALLERGY_CHANGE_OPTION = "アレルギー情報"
+COMPOUND_DONATION_WITH_COST_OPTION = "寄附額（商品代変更アリ）"
+COMPOUND_DONATION_WITHOUT_COST_OPTION = "寄附額（商品代変更ナシ）"
 NEW_PRODUCT_REQUIRED_COLUMNS = {
     "管理コード",
     "（必須）お礼の品名", "（必須）発送期日種別", "（必須）カテゴリー",
@@ -1793,9 +1795,12 @@ def render_product_request_tab(
                     *[
                         field for field in selectable_fields
                         if field.source_column not in {
-                            "（必須）定期配送対応", "（必須）別送対応", "（必須）表示有無"
+                            "（必須）定期配送対応", "（必須）別送対応", "（必須）表示有無",
+                            DONATION_COLUMN,
                         }
                     ],
+                    COMPOUND_DONATION_WITH_COST_OPTION,
+                    COMPOUND_DONATION_WITHOUT_COST_OPTION,
                     TEMPERATURE_CHANGE_OPTION,
                     ALLERGY_CHANGE_OPTION,
                 ]
@@ -1812,6 +1817,16 @@ def render_product_request_tab(
                     option for option in selected_change_options
                     if isinstance(option, RequestFormField)
                 ]
+                if any(
+                    option in selected_change_options
+                    for option in (
+                        COMPOUND_DONATION_WITH_COST_OPTION,
+                        COMPOUND_DONATION_WITHOUT_COST_OPTION,
+                    )
+                ):
+                    donation_field = find_request_form_field(form_fields, DONATION_COLUMN)
+                    if donation_field is not None:
+                        selected_optional_fields.append(donation_field)
             else:
                 selected_change_options = []
                 target_columns = CORRECTION_TYPE_COLUMNS[correction_type]
@@ -1900,7 +1915,21 @@ def render_product_request_tab(
                 sku_composition = ""
                 sku_split_axes = []
                 correction_backlog_values: dict[int, dict[str, str]] = {}
-                if correction_type == "寄附額変更（商品代変更アリ）":
+                donation_with_cost_requested = (
+                    correction_type == "寄附額変更（商品代変更アリ）"
+                    or (
+                        correction_type == "複合的な修正"
+                        and COMPOUND_DONATION_WITH_COST_OPTION in selected_change_options
+                    )
+                )
+                donation_without_cost_requested = (
+                    correction_type == "寄附額変更（商品代変更ナシ）"
+                    or (
+                        correction_type == "複合的な修正"
+                        and COMPOUND_DONATION_WITHOUT_COST_OPTION in selected_change_options
+                    )
+                )
+                if donation_with_cost_requested:
                     st.subheader("商品代の変更")
                     st.caption("寄附額とあわせて変更後の商品代を入力してください。")
                     for product_index, product in enumerate(selected_products):
@@ -1917,7 +1946,7 @@ def render_product_request_tab(
                                 "商品代（税込）": product_cost,
                             }
                             correction_backlog_values[product_index] = values
-                elif correction_type == "寄附額変更（商品代変更ナシ）":
+                elif donation_without_cost_requested:
                     correction_backlog_values = {
                         product_index: {"商品代変更": "商品代を変更しない"}
                         for product_index, _ in enumerate(selected_products)
@@ -2198,7 +2227,7 @@ def render_product_request_tab(
                                 input_errors.append(f"{_product_label(product)}: 新品番")
                             else:
                                 new_lines.extend(_build_management_code_lines(product, new_code))
-                if correction_type == "寄附額変更（商品代変更アリ）":
+                if donation_with_cost_requested:
                     for product_index, product in enumerate(selected_products):
                         values = correction_backlog_values.get(product_index, {})
                         cost_value = values.get("商品代（税込）", "").strip()

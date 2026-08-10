@@ -148,16 +148,20 @@ def test_donation_correction_types_control_product_cost_input():
     assert '"寄附額変更（商品代変更アリ）"' in source
     assert '"寄附額変更（商品代変更ナシ）"' in source
     cost_section = source.index('st.subheader("商品代の変更")')
-    cost_condition = source.rfind(
-        'if correction_type == "寄附額変更（商品代変更アリ）"',
-        0,
-        cost_section,
-    )
+    cost_condition = source.rfind("if donation_with_cost_requested:", 0, cost_section)
     assert cost_condition >= 0
-    no_cost_branch = source.index(
-        'elif correction_type == "寄附額変更（商品代変更ナシ）"',
-        cost_section,
-    )
+    no_cost_branch = source.index("elif donation_without_cost_requested:", cost_section)
     assert '"商品代変更": "商品代を変更しない"' in source[
         no_cost_branch:no_cost_branch + 400
     ]
+
+
+def test_compound_donation_options_control_product_cost_input():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'COMPOUND_DONATION_WITH_COST_OPTION = "寄附額（商品代変更アリ）"' in source
+    assert 'COMPOUND_DONATION_WITHOUT_COST_OPTION = "寄附額（商品代変更ナシ）"' in source
+    assert "and COMPOUND_DONATION_WITH_COST_OPTION in selected_change_options" in source
+    assert "and COMPOUND_DONATION_WITHOUT_COST_OPTION in selected_change_options" in source
+    assert "if donation_with_cost_requested:" in source
