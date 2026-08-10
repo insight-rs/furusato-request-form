@@ -1858,31 +1858,14 @@ def render_product_request_tab(
                                 default="新品番を入力する",
                                 key=f"compound_code_method_{editor_context}_{product_index}",
                             )
-                            values = {"品番取得方法": code_method or ""}
+                            values = correction_backlog_values.setdefault(product_index, {})
+                            values["品番取得方法"] = code_method or ""
                             if code_method == "新品番を入力する":
                                 values["新品番"] = st.text_input(
                                     "新品番",
                                     key=f"compound_new_code_{editor_context}_{product_index}",
                                 )
                             correction_backlog_values[product_index] = values
-                if not is_new_product:
-                    for product_index, product in enumerate(selected_products):
-                        values = correction_backlog_values.get(product_index, {})
-                        cost_mode = values.get("商品代変更", "")
-                        if not cost_mode:
-                            input_errors.append(f"{_product_label(product)}: 商品代を変更する・しない")
-                        elif cost_mode == "商品代を変更する":
-                            cost_value = values.get("商品代（税込）", "").strip()
-                            if not _is_nonnegative_integer(cost_value):
-                                input_errors.append(f"{_product_label(product)}: 商品代（税込）")
-                            else:
-                                new_lines.append(ProductCorrectionLine(
-                                    product=product,
-                                    field_name=f"{BACKLOG_ONLY_PREFIX}商品代（税込）",
-                                    before_value=product.source_values().get("商品代（税込）", ""),
-                                    after_value=cost_value,
-                                    display_name="商品代",
-                                ))
                 if is_new_product:
                     st.subheader("Backlog用の商品情報")
                     imported_extras = (
@@ -2118,6 +2101,24 @@ def render_product_request_tab(
                                 input_errors.append(f"{_product_label(product)}: 新品番")
                             else:
                                 new_lines.extend(_build_management_code_lines(product, new_code))
+                if not is_new_product:
+                    for product_index, product in enumerate(selected_products):
+                        values = correction_backlog_values.get(product_index, {})
+                        cost_mode = values.get("商品代変更", "")
+                        if not cost_mode:
+                            input_errors.append(f"{_product_label(product)}: 商品代を変更する・しない")
+                        elif cost_mode == "商品代を変更する":
+                            cost_value = values.get("商品代（税込）", "").strip()
+                            if not _is_nonnegative_integer(cost_value):
+                                input_errors.append(f"{_product_label(product)}: 商品代（税込）")
+                            else:
+                                new_lines.append(ProductCorrectionLine(
+                                    product=product,
+                                    field_name=f"{BACKLOG_ONLY_PREFIX}商品代（税込）",
+                                    before_value=product.source_values().get("商品代（税込）", ""),
+                                    after_value=cost_value,
+                                    display_name="商品代",
+                                ))
                 if is_new_product:
                     if stock_quantity != "無制限" and not _is_nonnegative_integer(stock_quantity):
                         input_errors.append("新規商品: 在庫数")
