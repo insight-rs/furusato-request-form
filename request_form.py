@@ -449,6 +449,18 @@ def _build_management_code_lines(product, new_code: str) -> list[ProductCorrecti
     return lines
 
 
+def _build_product_code_request_line(product) -> ProductCorrectionLine:
+    """既存品番を残し、新品番欄は作業者向けの取得指示として表示する。"""
+    current_code = product.source_values().get(MANAGEMENT_CODE_COLUMN, "")
+    return ProductCorrectionLine(
+        product=product,
+        field_name=f"{BACKLOG_ONLY_PREFIX}品番取得依頼",
+        before_value=current_code,
+        after_value="（空欄：品番を取得してください）",
+        display_name="品番",
+    )
+
+
 def _field_column_config(field: RequestFormField):
     if field.input_kind == "選択" and field.options():
         return st.column_config.SelectboxColumn(
@@ -532,11 +544,13 @@ def _render_product_change_editor(
                         "地場産品類型",
                         options=[""] + labels,
                         key=f"{field_key}_type",
+                        persist_state="session",
                     )
                     reason = st.text_area(
                         "地場産品に該当する理由",
                         key=f"{field_key}_reason",
                         help="2号・3号・6号は具体的な理由が必要です。",
+                        persist_state="session",
                     )
                     selected_code = selected_label.split("｜", 1)[0] if selected_label else ""
                     after_by_field[field.field_id] = f"{selected_code}|{reason.strip()}" if selected_code or reason.strip() else ""
@@ -559,6 +573,7 @@ def _render_product_change_editor(
                             f"カテゴリー{category_index + 1}：大項目" + ("（必須）" if category_index == 0 else "（任意）"),
                             options=[""] + major_options,
                             key=f"{field_key}_{category_index}_major",
+                            persist_state="session",
                         )
                         matching_major = [row for row in categories if row.major == major]
                         middle_options = list(dict.fromkeys(row.middle for row in matching_major if row.middle))
@@ -571,6 +586,7 @@ def _render_product_change_editor(
                             options=[""] + middle_options,
                             disabled=not middle_options,
                             key=f"{field_key}_{category_index}_middle",
+                            persist_state="session",
                         )
                         matching_middle = [row for row in matching_major if row.middle == middle]
                         minor_options = list(dict.fromkeys(row.minor for row in matching_middle if row.minor))
@@ -583,6 +599,7 @@ def _render_product_change_editor(
                             options=[""] + minor_options,
                             disabled=not minor_options,
                             key=f"{field_key}_{category_index}_minor",
+                            persist_state="session",
                         )
                         candidates = [
                             row for row in categories
@@ -602,6 +619,7 @@ def _render_product_change_editor(
                         disabled=True,
                         key=field_key,
                         help="フォーム項目マスタで設定された固定値です。",
+                        persist_state="session",
                     )
                 elif field.input_kind == "選択" and field.options():
                     label_by_code = {code: label for label, code in field.options()}
@@ -610,6 +628,7 @@ def _render_product_change_editor(
                         field.label,
                         options=[""] + [label for label, _ in field.options()],
                         key=field_key,
+                        persist_state="session",
                     )
                 elif field.input_kind == "日付":
                     st.session_state.setdefault(field_key, _parse_date_value(initial_value))
@@ -619,12 +638,14 @@ def _render_product_change_editor(
                         format="YYYY-MM-DD",
                         key=field_key,
                         help="カレンダーから選択できます。直接入力も可能です。",
+                        persist_state="session",
                     )
                 else:
                     st.session_state.setdefault(field_key, initial_value)
                     after_by_field[field.field_id] = st.text_input(
                         field.label,
                         key=field_key,
+                        persist_state="session",
                     )
         edited_rows.append(after_by_field)
     return pd.DataFrame(edited_rows)
@@ -1776,7 +1797,7 @@ def render_product_request_tab(
             editor_context = "|".join((
                 target_municipality_id,
                 ",".join(product.product_id for product in selected_products),
-                ",".join(field.field_id for field in fields_for_input),
+                product_shape,
                 str(st.session_state.product_change_editor_version),
             ))
             with st.container(border=True):
@@ -2044,7 +2065,7 @@ def render_product_request_tab(
                     "選択した変更を明細に追加",
                     type="secondary",
                     key="add_selected_correction_lines",
-                )
+                ) or st.session_state.pop("auto_add_pending", False)
             if add_lines:
                 new_lines = []
                 input_errors = []
@@ -2088,13 +2109,7 @@ def render_product_request_tab(
                     for product_index, product in enumerate(selected_products):
                         values = correction_backlog_values.get(product_index, {})
                         if values.get("品番取得方法") == "品番取得を依頼する":
-                            new_lines.append(ProductCorrectionLine(
-                                product=product,
-                                field_name=f"{BACKLOG_ONLY_PREFIX}品番取得依頼",
-                                before_value="",
-                                after_value="品番取得を依頼",
-                                display_name="品番取得依頼（Backlogのみ）",
-                            ))
+                            new_lines.append(_build_product_code_request_line(product))
                         else:
                             new_code = values.get("新品番", "").strip()
                             if not new_code:
@@ -2279,13 +2294,7 @@ def render_product_request_tab(
                         else:
                             code_method = values.get("品番取得方法", "")
                             if code_method == "品番取得を外部依頼":
-                                new_lines.append(ProductCorrectionLine(
-                                    product=product,
-                                    field_name=f"{BACKLOG_ONLY_PREFIX}品番取得依頼",
-                                    before_value="",
-                                    after_value="外部へ新品番の取得を依頼",
-                                    display_name="品番取得依頼（Backlogのみ）",
-                                ))
+                                new_lines.append(_build_product_code_request_line(product))
                             elif code_method == "新品番を入力":
                                 new_code = values.get("新品番", "").strip()
                                 if not new_code:
@@ -2428,6 +2437,7 @@ def render_product_request_tab(
                             display_name="画像修正（Backlogのみ）",
                         ))
                 if input_errors:
+                    st.session_state.pop("auto_save_ready", None)
                     st.error("必須項目を入力してください: " + " / ".join(input_errors))
                 elif correction_lines and any(
                     line.product.municipality_id != target_municipality_id
@@ -2435,6 +2445,7 @@ def render_product_request_tab(
                 ):
                     st.error("追加済み明細とは別の自治体です。先に明細をクリアしてください。")
                 elif not new_lines:
+                    st.session_state.pop("auto_save_ready", None)
                     st.warning("現在値と異なる変更後値を入力または選択してください。")
                 else:
                     st.session_state.correction_lines.extend(new_lines)
@@ -2787,12 +2798,20 @@ def render_product_request_tab(
                         custom_field, field_key
                     )
 
-    if st.button("依頼を保存", type="primary", width="stretch"):
+    save_request = st.button(
+        "依頼を保存", type="primary", width="stretch"
+    ) or st.session_state.pop("auto_save_ready", False)
+    if save_request:
         try:
             if selected_issue_type is None or target_backlog_config is None:
                 raise ValueError("Backlog課題種別または接続設定を確認してください。")
             if (request_unit == "商品単位" or is_new_product) and not correction_lines:
-                raise ValueError("商品修正・新規登録は、少なくとも1件の明細を追加してください。")
+                if "add_lines" in locals() and not add_lines:
+                    st.session_state.auto_add_pending = True
+                    st.session_state.auto_save_ready = True
+                    st.info("入力中の内容を明細へ自動追加してから、課題登録を続けます。")
+                    st.rerun()
+                raise ValueError("入力内容から追加できる変更明細がありません。入力項目を確認してください。")
             if not is_new_product and request_unit != "商品単位" and not request_note.strip():
                 raise ValueError("自治体対応・その他の依頼は、対応内容・備考を入力してください。")
             if not requester.strip():

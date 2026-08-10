@@ -66,7 +66,7 @@ def _backlog_line_priority(line: "ProductCorrectionLine") -> tuple[int, str]:
     """ページ修正テンプレートの重要項目を常に表の先頭へ並べる。"""
     field = normalize(line.field_name)
     label = normalize(line.display_name)
-    if field == "管理コード" or label == "品番":
+    if field == "管理コード" or field.endswith("品番取得依頼") or label == "品番":
         return 0, label or field
     if field == "（必須）お礼の品名" or label == "商品名":
         return 1, label or field
@@ -421,9 +421,8 @@ def build_backlog_issue_content(
         ])
     request_note, box_url = _split_request_note(request.note)
     if request.request_unit in {"商品単位", "新規商品登録"}:
-        description_lines.append("【商品の変更点】")
         if request_note:
-            description_lines.extend(["", "対応内容・備考：", request_note])
+            description_lines.extend(["対応内容・備考：", request_note])
     if not display_lines:
         description_lines.append("商品単位の変更はありません。")
     else:
