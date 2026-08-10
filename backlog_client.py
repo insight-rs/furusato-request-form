@@ -66,6 +66,51 @@ def _default_request_sender(method: str, url: str, data: bytes | None) -> tuple[
         raise BacklogApiError("Backlog APIへ接続できませんでした。") from error
 
 
+def _oauth_request_sender(access_token: str) -> RequestSender:
+    """OAuthアクセストークンをAuthorizationヘッダーへ付ける送信関数を返す。"""
+
+    def send(method: str, url: str, data: bytes | None) -> tuple[int, bytes]:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        if data is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        request = Request(url, data=data, method=method, headers=headers)
+        try:
+            with urlopen(request, timeout=30) as response:
+                return response.status, response.read()
+        except HTTPError as error:
+            return error.code, error.read()
+        except URLError as error:
+            raise BacklogApiError("Backlog APIへ接続できませんでした。") from error
+
+    return send
+
+
+def _oauth_attachment_request_sender(access_token: str) -> AttachmentRequestSender:
+    """添付ファイルAPIへOAuth認証を付ける送信関数を返す。"""
+
+    def send(
+        method: str, url: str, data: bytes, headers: dict[str, str]
+    ) -> tuple[int, bytes]:
+        request_headers = dict(headers)
+        request_headers["Authorization"] = f"Bearer {access_token}"
+        request = Request(url, data=data, method=method, headers=request_headers)
+        try:
+            with urlopen(request, timeout=60) as response:
+                return response.status, response.read()
+        except HTTPError as error:
+            return error.code, error.read()
+        except URLError as error:
+            raise BacklogApiError("Backlog APIへ接続できませんでした。") from error
+
+    return send
+
+
+def _api_url(url: str, api_key: str, access_token: str) -> str:
+    """OAuth利用時はAPIキーをURLへ含めない。"""
+
+    return url if normalize(access_token) else f"{url}?{urlencode({'apiKey': api_key})}"
+
+
 def _default_attachment_request_sender(
     method: str,
     url: str,
@@ -123,6 +168,7 @@ def _read_response(
 def resolve_project_id(
     config: BacklogConfig,
     request_sender: RequestSender = _default_request_sender,
+    access_token: str = "",
 ) -> str:
     """プロジェクトIDまたはプロジェクトキーを数値IDに解決する。"""
 
@@ -133,10 +179,13 @@ def resolve_project_id(
         return project_id
 
     base_url = backlog_base_url(config.space_id)
-    url = (
-        f"{base_url}/api/v2/projects/{quote(project_id, safe='')}?"
-        f"{urlencode({'apiKey': config.api_key})}"
+    url = _api_url(
+        f"{base_url}/api/v2/projects/{quote(project_id, safe='')}",
+        config.api_key,
+        access_token,
     )
+    if normalize(access_token) and request_sender is _default_request_sender:
+        request_sender = _oauth_request_sender(access_token)
     payload = _read_response("GET", url, None, request_sender)
     resolved_id = normalize(payload.get("id"))
     if not resolved_id:
@@ -157,6 +206,7 @@ def create_issue(
     notified_user_ids: list[str] | tuple[str, ...] | None = None,
     custom_field_parameters: Mapping[str, str | list[str]] | None = None,
     request_sender: RequestSender = _default_request_sender,
+    access_token: str = "",
 ) -> BacklogIssue:
     """Backlogに親課題を1件起票する。"""
 
@@ -168,7 +218,11 @@ def create_issue(
         raise ConfigError("Backlog課題種別IDが設定されていません。")
 
     base_url = backlog_base_url(config.space_id)
-    project_id = resolve_project_id(config, request_sender)
+    if normalize(access_token) and request_sender is _default_request_sender:
+        request_sender = _oauth_request_sender(access_token)
+    project_id = resolve_project_id(
+        config, request_sender=request_sender, access_token=access_token
+    )
     values = {
         "projectId": project_id,
         "summary": normalized_summary,
@@ -194,7 +248,7 @@ def create_issue(
             raise ConfigError("Backlogカスタム属性のパラメータ名が不正です。")
         values[normalized_key] = value
     body = urlencode(values, doseq=True).encode("utf-8")
-    url = f"{base_url}/api/v2/issues?{urlencode({'apiKey': config.api_key})}"
+    url = _api_url(f"{base_url}/api/v2/issues", config.api_key, access_token)
     payload = _read_response("POST", url, body, request_sender)
     issue_key = normalize(payload.get("issueKey"))
     issue_id = normalize(payload.get("id"))
@@ -219,6 +273,7 @@ def update_issue(
     notified_user_ids: list[str] | tuple[str, ...] | None = None,
     custom_field_parameters: Mapping[str, str | list[str]] | None = None,
     request_sender: RequestSender = _default_request_sender,
+    access_token: str = "",
 ) -> BacklogIssue:
     """既存のBacklog課題を、再編集した依頼内容で更新する。"""
 
@@ -251,9 +306,12 @@ def update_issue(
         values[normalized_key] = value
 
     base_url = backlog_base_url(config.space_id)
-    url = (
-        f"{base_url}/api/v2/issues/{quote(normalized_issue_key, safe='')}?"
-        f"{urlencode({'apiKey': config.api_key})}"
+    if normalize(access_token) and request_sender is _default_request_sender:
+        request_sender = _oauth_request_sender(access_token)
+    url = _api_url(
+        f"{base_url}/api/v2/issues/{quote(normalized_issue_key, safe='')}",
+        config.api_key,
+        access_token,
     )
     payload = _read_response(
         "PATCH", url, urlencode(values, doseq=True).encode("utf-8"), request_sender
@@ -316,6 +374,7 @@ def upload_file(
     config: BacklogConfig,
     file_path: Path,
     request_sender: AttachmentRequestSender = _default_attachment_request_sender,
+    access_token: str = "",
 ) -> str:
     """Backlogの添付一時領域へファイルをアップロードし、添付IDを返す。"""
 
@@ -336,7 +395,11 @@ def upload_file(
         file_contents,
         f"\r\n--{boundary}--\r\n".encode("utf-8"),
     ])
-    url = f"{base_url}/api/v2/space/attachment?{urlencode({'apiKey': config.api_key})}"
+    if normalize(access_token) and request_sender is _default_attachment_request_sender:
+        request_sender = _oauth_attachment_request_sender(access_token)
+    url = _api_url(
+        f"{base_url}/api/v2/space/attachment", config.api_key, access_token
+    )
     status, response_body = request_sender(
         "POST", url, body, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
     )
@@ -358,17 +421,27 @@ def attach_file_to_issue(
     file_path: Path,
     upload_request_sender: AttachmentRequestSender = _default_attachment_request_sender,
     request_sender: RequestSender = _default_request_sender,
+    access_token: str = "",
 ) -> None:
     """ファイルをアップロードし、指定したBacklog課題へ添付する。"""
 
     normalized_issue_key = normalize(issue_key)
     if not normalized_issue_key:
         raise ConfigError("Backlog課題キーが設定されていません。")
-    attachment_id = upload_file(config, file_path, upload_request_sender)
+    if normalize(access_token):
+        if upload_request_sender is _default_attachment_request_sender:
+            upload_request_sender = _oauth_attachment_request_sender(access_token)
+        if request_sender is _default_request_sender:
+            request_sender = _oauth_request_sender(access_token)
+    attachment_id = upload_file(
+        config, file_path, request_sender=upload_request_sender,
+        access_token=access_token,
+    )
     base_url = backlog_base_url(config.space_id)
-    url = (
-        f"{base_url}/api/v2/issues/{quote(normalized_issue_key, safe='')}?"
-        f"{urlencode({'apiKey': config.api_key})}"
+    url = _api_url(
+        f"{base_url}/api/v2/issues/{quote(normalized_issue_key, safe='')}",
+        config.api_key,
+        access_token,
     )
     data = urlencode({"attachmentId[]": attachment_id}).encode("utf-8")
     status, response_body = request_sender("PATCH", url, data)

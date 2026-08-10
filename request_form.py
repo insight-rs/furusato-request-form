@@ -16,6 +16,12 @@ from choice_reference import load_choice_categories, load_local_product_standard
 
 from backlog_client import attach_file_to_issue, create_issue, update_issue
 from backlog_config import backlog_configs_by_municipality_id, load_backlog_configs
+from backlog_oauth import (
+    access_token_for_user,
+    authorization_url,
+    load_oauth_settings,
+    load_refresh_token,
+)
 from backlog_custom_fields import (
     build_custom_field_parameters,
     get_applicable_custom_fields,
@@ -25,6 +31,7 @@ from backlog_issue_types import load_backlog_issue_types
 from backlog_statuses import load_backlog_statuses
 from backlog_users import (
     fetch_backlog_project_teams,
+    find_user_by_login_email,
     get_project_users,
     load_backlog_project_users,
 )
@@ -1315,6 +1322,7 @@ def render_product_request_tab(
     config_spreadsheet_id: str,
     product_spreadsheet_id: str,
     credentials_path: Path,
+    login_email: str = "",
 ) -> None:
     st.subheader("商品修正・施策依頼")
     st.caption(
@@ -2573,6 +2581,7 @@ def render_product_request_tab(
     target_project_users = []
     target_project_teams = []
     requester = ""
+    backlog_access_token = ""
     if create_backlog_issue and selected_issue_type is not None:
         try:
             target_project_users = get_project_users(
@@ -2588,13 +2597,20 @@ def render_product_request_tab(
             target_project_teams = []
             st.warning("Backlogチームを読み込めません。個人の通知先は選択できます。")
         if target_project_users:
-            requester_user = st.selectbox(
-                "依頼者（Backlogメンバーから選択・記録用）",
-                options=target_project_users,
-                format_func=lambda user: user.display_name,
-                key=f"requester_user_{target_municipality_id}",
-            )
-            requester = requester_user.name
+            requester_user = find_user_by_login_email(
+                target_project_users, target_municipality_id, login_email
+            ) if login_email else None
+            if requester_user is not None:
+                requester = requester_user.name
+                st.success(f"依頼者：{requester_user.display_name}（ログイン情報から自動判定）")
+            else:
+                requester_user = st.selectbox(
+                    "依頼者（Backlogメンバーから選択・記録用）",
+                    options=target_project_users,
+                    format_func=lambda user: user.display_name,
+                    key=f"requester_user_{target_municipality_id}",
+                )
+                requester = requester_user.name
             assignee_user = st.selectbox(
                 "Backlog担当者（任意）",
                 options=[None] + target_project_users,
@@ -2652,6 +2668,30 @@ def render_product_request_tab(
                     for user_id in option[3]
                 ] + list(forced_notification_ids)
             ))
+
+            if login_email and target_backlog_config:
+                oauth_settings = load_oauth_settings()
+                if not oauth_settings.configured:
+                    st.warning("本人名義でのBacklog起票は管理者のOAuth設定完了後に利用できます。")
+                else:
+                    try:
+                        linked = bool(load_refresh_token(
+                            config_spreadsheet_id, credentials_path, oauth_settings,
+                            login_email, target_backlog_config.space_id,
+                        ))
+                    except Exception:
+                        linked = False
+                    if linked:
+                        st.success("Backlog本人連携済み：課題の登録者はログイン中の本人になります。")
+                    else:
+                        st.link_button(
+                            "Backlogと連携する（初回のみ）",
+                            authorization_url(
+                                oauth_settings, target_backlog_config.space_id, login_email
+                            ),
+                            type="primary", icon=":material/link:", width="stretch",
+                        )
+                        st.caption("連携後にこの画面へ戻ります。APIキーの発行・入力は不要です。")
         else:
             requester = st.text_input("依頼者", key="requester")
         try:
@@ -2832,6 +2872,15 @@ def render_product_request_tab(
                 raise ValueError("自治体対応・その他の依頼は、対応内容・備考を入力してください。")
             if not requester.strip():
                 raise ValueError("依頼者を入力してください。")
+            if login_email:
+                oauth_settings = load_oauth_settings()
+                if oauth_settings.configured:
+                    backlog_access_token = access_token_for_user(
+                        config_spreadsheet_id, credentials_path, oauth_settings,
+                        login_email, target_backlog_config.space_id,
+                    )
+                    if not backlog_access_token:
+                        raise ValueError("先に「Backlogと連携する」を実行してください。")
             if work_category == "施策" and selected_policy is None:
                 raise ValueError("施策種別と具体内容を選択してください。")
             if backlog_start_date and backlog_due_date and backlog_start_date > backlog_due_date:
@@ -2934,6 +2983,7 @@ def render_product_request_tab(
                         assignee_id=backlog_assignee_id,
                         notified_user_ids=backlog_notified_user_ids,
                         custom_field_parameters=custom_field_parameters,
+                        access_token=backlog_access_token,
                     )
                 else:
                     issue = create_issue(
@@ -2947,6 +2997,7 @@ def render_product_request_tab(
                         assignee_id=backlog_assignee_id,
                         notified_user_ids=backlog_notified_user_ids,
                         custom_field_parameters=custom_field_parameters,
+                        access_token=backlog_access_token,
                     )
             except Exception:
                 st.warning(
@@ -2976,6 +3027,7 @@ def render_product_request_tab(
                         config=target_backlog_config,
                         issue_key=issue.issue_key,
                         file_path=comparison_path,
+                        access_token=backlog_access_token,
                     )
                     comparison_attached = True
                 except Exception:
@@ -2992,6 +3044,7 @@ def render_product_request_tab(
                             config=target_backlog_config,
                             issue_key=issue.issue_key,
                             file_path=uploaded_path,
+                            access_token=backlog_access_token,
                         )
                         uploaded_attachment_count += 1
                 except Exception:
@@ -3030,6 +3083,7 @@ def render_product_request_tab(
                         parent_issue_id=issue.issue_id,
                         assignee_id=image_child_assignee_id,
                         custom_field_parameters=image_child_custom_parameters,
+                        access_token=backlog_access_token,
                     )
                     for image_request_id in result.image_request_ids:
                         update_image_request_backlog_child(

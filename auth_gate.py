@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-
 import streamlit as st
 
 
@@ -14,49 +13,26 @@ class AuthenticatedUser:
     name: str
 
 
-def _local_bypass_enabled() -> bool:
-    return os.getenv("APP_AUTH_BYPASS", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def require_authenticated_user() -> AuthenticatedUser:
-    """Stop rendering until a user has authenticated through Auth0 OIDC."""
-    if _local_bypass_enabled():
+    if os.getenv("APP_AUTH_BYPASS", "").strip().lower() in {"1", "true", "yes", "on"}:
         return AuthenticatedUser(
             email=os.getenv("APP_AUTH_BYPASS_EMAIL", "local-admin@example.invalid"),
             name="ローカル管理者",
         )
-
     if not st.user.is_logged_in:
         st.title("ふるさと納税業務支援")
         st.write("登録済みのメールアドレスと、ご自身で設定したパスワードでログインしてください。")
-        st.caption("Googleアカウントは不要です。ログイン時のメールOTPも使用しません。")
-        if st.button(
-            "メールアドレスでログイン",
-            type="primary",
-            icon=":material/login:",
-            width="stretch",
-        ):
+        if st.button("メールアドレスでログイン", type="primary", icon=":material/login:", width="stretch"):
             st.login("auth0")
         st.stop()
-
     email = str(st.user.get("email", "")).strip().lower()
     if not email:
-        st.error("ログイン情報からメールアドレスを確認できませんでした。管理者へご連絡ください。")
-        if st.button("ログアウト"):
-            st.logout()
+        st.error("ログイン情報からメールアドレスを確認できませんでした。")
         st.stop()
-
-    name = str(st.user.get("name", "")).strip() or email
-    return AuthenticatedUser(email=email, name=name)
+    return AuthenticatedUser(email=email, name=str(st.user.get("name", "")).strip() or email)
 
 
 def render_user_menu(user: AuthenticatedUser) -> None:
-    """Show the signed-in identity and logout action."""
     with st.container(horizontal=True, horizontal_alignment="right"):
         st.caption(f"ログイン中：{user.email}")
         if st.button("ログアウト", icon=":material/logout:", key="cloud_logout"):

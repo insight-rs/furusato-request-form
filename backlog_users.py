@@ -25,6 +25,7 @@ class BacklogProjectUser:
     user_id: str
     name: str
     mail_address: str
+    login_address: str = ""
 
     @property
     def display_name(self) -> str:
@@ -59,6 +60,7 @@ def build_backlog_project_users(rows: Iterable[dict]) -> list[BacklogProjectUser
             user_id=user_id,
             name=name,
             mail_address=normalize(row.get("Backlog登録メールアドレス")),
+            login_address=normalize(row.get("Googleログイン用アドレス")).lower(),
         ))
     return users
 
@@ -72,6 +74,29 @@ def get_project_users(
         [user for user in users if user.municipality_id == normalize(municipality_id)],
         key=lambda user: (user.name.casefold(), user.user_id),
     )
+
+
+def find_user_by_login_email(
+    users: Iterable[BacklogProjectUser], municipality_id: str, login_email: str
+) -> BacklogProjectUser | None:
+    """ログインメールに一致する自治体のBacklogユーザーを一意に返す。"""
+
+    target_email = normalize(login_email).lower()
+    matches = [
+        user for user in users
+        if user.municipality_id == normalize(municipality_id)
+        and target_email in {
+            normalize(user.login_address).lower(),
+            normalize(user.mail_address).lower(),
+        }
+    ]
+    if len(matches) > 1:
+        user_ids = {user.user_id for user in matches}
+        if len(user_ids) > 1:
+            raise ConfigError(
+                "同じログインメールアドレスに複数のBacklogユーザーが登録されています。"
+            )
+    return matches[0] if matches else None
 
 
 def load_backlog_project_users(
