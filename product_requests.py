@@ -62,6 +62,27 @@ def _backlog_change_section(field_name: str) -> str:
     return "商品詳細"
 
 
+def _backlog_line_priority(line: "ProductCorrectionLine") -> tuple[int, str]:
+    """ページ修正テンプレートの重要項目を常に表の先頭へ並べる。"""
+    field = normalize(line.field_name)
+    label = normalize(line.display_name)
+    if field == "管理コード" or label == "品番":
+        return 0, label or field
+    if field == "（必須）お礼の品名" or label == "商品名":
+        return 1, label or field
+    if "寄附額" in field or "寄附額" in label:
+        return 2, label or field
+    if "商品代" in field or "商品代" in label:
+        return 3, label or field
+    if "在庫" in field or "在庫" in label:
+        return 4, label or field
+    return 100, label or field
+
+
+def _find_priority_line(lines: list["ProductCorrectionLine"], priority: int):
+    return next((line for line in lines if _backlog_line_priority(line)[0] == priority), None)
+
+
 @dataclass(frozen=True)
 class ProductReference:
     municipality_id: str
@@ -386,6 +407,7 @@ def build_backlog_issue_content(
             key = (line.product.municipality_id, line.product.product_id)
             lines_by_product.setdefault(key, []).append(line)
         for product_number, product_lines in enumerate(lines_by_product.values(), start=1):
+            product_lines = sorted(product_lines, key=_backlog_line_priority)
             product = product_lines[0].product
             management_code = normalize(product.source_values().get("管理コード"))
             description_lines.extend([
@@ -396,6 +418,66 @@ def build_backlog_issue_content(
             ])
             if product.business_name:
                 description_lines.append(f"事業者：{product.business_name}")
+            source_values = product.source_values()
+            code_line = _find_priority_line(product_lines, 0)
+            name_line = _find_priority_line(product_lines, 1)
+            donation_line = _find_priority_line(product_lines, 2)
+            cost_line = _find_priority_line(product_lines, 3)
+            stock_line = _find_priority_line(product_lines, 4)
+
+            def transition(current: str, line: ProductCorrectionLine | None) -> str:
+                before = _backlog_display_value(
+                    line.field_name if line else "", line.before_value if line else current
+                )
+                after = _backlog_display_value(
+                    line.field_name if line else "", line.after_value if line else current
+                )
+                return f"{before} → {after}"
+
+            # 作業者が最初に確認するページ修正テンプレート。
+            # 商品修正では品番・商品名・寄附額・商品代を必ず明示し、在庫は依頼時のみ表示する。
+            if request.request_unit == "商品単位":
+                description_lines.extend([
+                    "",
+                    "【ページ修正テンプレート】",
+                    f"品番：{transition(management_code, code_line)}",
+                    f"商品名：{transition(product.product_name, name_line)}",
+                    f"寄附額：{transition(source_values.get('（条件付き必須）必要寄付金額', ''), donation_line)}",
+                    (
+                        f"商品代：{transition(source_values.get('商品代（税込）', ''), cost_line)}"
+                        if cost_line else "商品代：変更なし"
+                    ),
+                ])
+                if stock_line:
+                    description_lines.append(
+                        f"在庫：{_backlog_display_value(stock_line.field_name, stock_line.after_value)}"
+                    )
+            else:
+                changed_summaries = []
+                for label, line in (
+                    ("品番", code_line), ("商品名", name_line),
+                    ("寄附額", donation_line), ("商品代", cost_line),
+                ):
+                    if line:
+                        changed_summaries.append(f"{label}：{transition('', line)}")
+                if stock_line:
+                    changed_summaries.append(
+                        f"在庫：{_backlog_display_value(stock_line.field_name, stock_line.after_value)}"
+                    )
+                if changed_summaries:
+                    description_lines.extend(["", "【ページ修正テンプレート】", *changed_summaries])
+
+            sku_or_subscription = [
+                line for line in product_lines
+                if normalize(line.display_name).startswith(("SKU ", "定期便 第"))
+            ]
+            if sku_or_subscription:
+                description_lines.extend(["", "【SKU・定期便の商品別明細】"])
+                for detail_line in sku_or_subscription:
+                    description_lines.extend([
+                        f"■ {normalize(detail_line.display_name).replace('（Backlogのみ）', '')}",
+                        _backlog_display_value(detail_line.field_name, detail_line.after_value),
+                    ])
             image_instructions = []
             change_notes = []
             description_lines.extend([

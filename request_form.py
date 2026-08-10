@@ -135,7 +135,7 @@ STATIC_FIXED_VALUES = {
 }
 CORRECTION_TYPES = (
     "複合的な修正",
-    "金額変更",
+    "寄附額変更",
     "在庫数変更",
     "表示・非表示切り替え",
     "商品名・キャッチコピー修正",
@@ -143,7 +143,7 @@ CORRECTION_TYPES = (
     "商品説明文・容量変更",
 )
 CORRECTION_TYPE_COLUMNS = {
-    "金額変更": {DONATION_COLUMN},
+    "寄附額変更": {DONATION_COLUMN},
     "在庫数変更": set(),
     "表示・非表示切り替え": {"（必須）表示有無"},
     "商品名・キャッチコピー修正": {PRODUCT_NAME_COLUMN, "キャッチコピー"},
@@ -1020,18 +1020,33 @@ def _render_sku_detail_editor(
                 key=f"sku_variation_{editor_context}_{index}",
                 help="例：コシヒカリ / 5kg / 10月配送",
             )
-            columns = st.columns(3)
-            with columns[0]:
+            if item_type == "新規":
+                cost_change_mode = "商品代を登録する"
                 product_cost = st.text_input(
-                    "商品代（税込）", value=source.get("商品代（税込）", ""),
+                    "商品代（税込・必須）", value=source.get("商品代（税込）", ""),
                     key=f"sku_cost_{editor_context}_{index}",
                 )
-            with columns[1]:
+            else:
+                cost_change_mode = st.segmented_control(
+                    "商品代（税込・必須）",
+                    ["商品代を変更する", "商品代を変更しない"],
+                    default=source.get("商品代変更", "商品代を変更しない"),
+                    key=f"sku_cost_mode_{editor_context}_{index}",
+                )
+                product_cost = ""
+                if cost_change_mode == "商品代を変更する":
+                    product_cost = st.text_input(
+                        "変更後の商品代（税込・必須）",
+                        value=source.get("商品代（税込）", ""),
+                        key=f"sku_cost_{editor_context}_{index}",
+                    )
+            columns = st.columns(2)
+            with columns[0]:
                 donation_value = st.text_input(
                     "寄附額", value=source.get("寄附額", donation),
                     key=f"sku_donation_{editor_context}_{index}",
                 )
-            with columns[2]:
+            with columns[1]:
                 stock = st.text_input(
                     "在庫数", value=source.get("在庫数", ""),
                     key=f"sku_stock_{editor_context}_{index}",
@@ -1051,7 +1066,8 @@ def _render_sku_detail_editor(
                 "品番取得方法": code_method, "SKU品番": sku_code,
                 "商品名": sku_name, "バリエーション名": variation,
                 "品種": "", "容量": "", "色": "", "数量": "", "配送月": "",
-                "その他の分け方": "", "商品代（税込）": product_cost,
+                "その他の分け方": "", "商品代変更": cost_change_mode,
+                "商品代（税込）": product_cost,
                 "寄附額": donation_value, "在庫数": stock,
                 "温度帯": temperature, "補足": note,
                 "チョイスマスタ値": existing_values,
@@ -1746,7 +1762,7 @@ def render_product_request_tab(
         )
         backlog_only_type = (
             not is_new_product
-            and correction_type in {"金額変更", "在庫数変更"}
+            and correction_type in {"寄附額変更", "在庫数変更"}
         )
         if selected_fields or temperature_change_requested or allergy_change_requested or backlog_only_type:
             system_fixed_fields = _system_fixed_fields(form_fields)
@@ -1795,6 +1811,27 @@ def render_product_request_tab(
                 sku_composition = ""
                 sku_split_axes = []
                 correction_backlog_values: dict[int, dict[str, str]] = {}
+                if not is_new_product:
+                    st.subheader("商品代の変更")
+                    st.caption("すべての修正依頼で、商品代を変更するか変更しないかを選択してください。")
+                    for product_index, product in enumerate(selected_products):
+                        with st.container(border=True):
+                            st.markdown(f"**{_product_label(product)}**")
+                            cost_change_mode = st.segmented_control(
+                                "商品代（税込・必須）",
+                                ["商品代を変更する", "商品代を変更しない"],
+                                default=None,
+                                required=True,
+                                key=f"correction_cost_mode_{editor_context}_{product_index}",
+                            )
+                            values = {"商品代変更": cost_change_mode or ""}
+                            if cost_change_mode == "商品代を変更する":
+                                values["商品代（税込）"] = st.text_input(
+                                    "変更後の商品代（税込・必須）",
+                                    placeholder="半角数字で入力",
+                                    key=f"correction_cost_{editor_context}_{product_index}",
+                                )
+                            correction_backlog_values[product_index] = values
                 if not is_new_product and product_shape == "定期便":
                     st.subheader("定期便のお届け内容")
                     subscription_detail_editor = _render_subscription_detail_editor(
@@ -1828,6 +1865,24 @@ def render_product_request_tab(
                                     key=f"compound_new_code_{editor_context}_{product_index}",
                                 )
                             correction_backlog_values[product_index] = values
+                if not is_new_product:
+                    for product_index, product in enumerate(selected_products):
+                        values = correction_backlog_values.get(product_index, {})
+                        cost_mode = values.get("商品代変更", "")
+                        if not cost_mode:
+                            input_errors.append(f"{_product_label(product)}: 商品代を変更する・しない")
+                        elif cost_mode == "商品代を変更する":
+                            cost_value = values.get("商品代（税込）", "").strip()
+                            if not _is_nonnegative_integer(cost_value):
+                                input_errors.append(f"{_product_label(product)}: 商品代（税込）")
+                            else:
+                                new_lines.append(ProductCorrectionLine(
+                                    product=product,
+                                    field_name=f"{BACKLOG_ONLY_PREFIX}商品代（税込）",
+                                    before_value=product.source_values().get("商品代（税込）", ""),
+                                    after_value=cost_value,
+                                    display_name="商品代",
+                                ))
                 if is_new_product:
                     st.subheader("Backlog用の商品情報")
                     imported_extras = (
@@ -1933,12 +1988,12 @@ def render_product_request_tab(
                             selected_business_name=business_name,
                             imported_rows=sku_rows,
                         )
-                elif correction_type in {"金額変更", "在庫数変更"}:
+                elif correction_type in {"寄附額変更", "在庫数変更"}:
                     st.subheader("変更後の商品管理情報")
                     for product_index, product in enumerate(selected_products):
                         with st.container(border=True):
                             st.markdown(f"**{_product_label(product)}**")
-                            values: dict[str, str] = {}
+                            values = correction_backlog_values.setdefault(product_index, {})
                             if correction_type == "在庫数変更":
                                 stock_mode = st.segmented_control(
                                     "変更後の在庫",
@@ -1952,11 +2007,6 @@ def render_product_request_tab(
                                     key=f"correction_stock_value_{editor_context}_{product_index}",
                                 )
                             else:
-                                values["商品代（税込）"] = st.text_input(
-                                    "変更後の商品代（税込）",
-                                    placeholder="半角数字で入力",
-                                    key=f"correction_cost_{editor_context}_{product_index}",
-                                )
                                 code_method = st.segmented_control(
                                     "品番の変更方法",
                                     options=["品番を変更しない", "新品番を入力", "品番取得を外部依頼"],
@@ -2179,6 +2229,12 @@ def render_product_request_tab(
                                 input_errors.append(f"SKU展開: SKU{index}の品番または品番取得依頼")
                             if not row.get("商品名") or not row.get("バリエーション名"):
                                 input_errors.append(f"SKU展開: SKU{index}の商品名・バリエーション名")
+                            if row.get("商品区分") == "新規":
+                                if not _is_nonnegative_integer(row.get("商品代（税込）", "")):
+                                    input_errors.append(f"SKU展開: SKU{index}の商品代（税込）")
+                            elif row.get("商品代変更") == "商品代を変更する":
+                                if not _is_nonnegative_integer(row.get("商品代（税込）", "")):
+                                    input_errors.append(f"SKU展開: SKU{index}の変更後商品代（税込）")
                             for axis in sku_split_axes:
                                 axis_column = "その他の分け方" if axis == "その他" else axis
                                 if not row.get(axis_column):
@@ -2191,7 +2247,8 @@ def render_product_request_tab(
                                     ("商品名", "商品名"), ("バリエーション", "バリエーション名"),
                                     ("品種", "品種"), ("容量", "容量"), ("色", "色"),
                                     ("数量", "数量"), ("配送月", "配送月"),
-                                    ("その他", "その他の分け方"), ("商品代（税込）", "商品代（税込）"),
+                                    ("その他", "その他の分け方"), ("商品代変更", "商品代変更"),
+                                    ("商品代（税込）", "商品代（税込）"),
                                     ("寄附額", "寄附額"), ("在庫数", "在庫数"),
                                     ("温度帯", "温度帯"), ("補足", "補足"),
                                 ) if row.get(column)
@@ -2203,7 +2260,7 @@ def render_product_request_tab(
                                 after_value=detail_text,
                                 display_name=f"SKU {index}（Backlogのみ）",
                             ))
-                elif correction_type in {"金額変更", "在庫数変更"}:
+                elif correction_type in {"寄附額変更", "在庫数変更"}:
                     for product_index, product in enumerate(selected_products):
                         values = correction_backlog_values.get(product_index, {})
                         if correction_type == "在庫数変更":
@@ -2219,17 +2276,6 @@ def render_product_request_tab(
                                     display_name="在庫数（Backlogのみ）",
                                 ))
                         else:
-                            cost_value = values.get("商品代（税込）", "").strip()
-                            if not _is_nonnegative_integer(cost_value):
-                                input_errors.append(f"{_product_label(product)}: 商品代（税込）")
-                            else:
-                                new_lines.append(ProductCorrectionLine(
-                                    product=product,
-                                    field_name=f"{BACKLOG_ONLY_PREFIX}商品代（税込）",
-                                    before_value="",
-                                    after_value=cost_value,
-                                    display_name="商品代（税込・Backlogのみ）",
-                                ))
                             code_method = values.get("品番取得方法", "")
                             if code_method == "品番取得を外部依頼":
                                 new_lines.append(ProductCorrectionLine(
@@ -2315,6 +2361,10 @@ def render_product_request_tab(
                     for index, row in enumerate(rows, start=1):
                         if not row.get("既存商品"):
                             input_errors.append(f"SKU展開: SKU{index}の既存商品")
+                        if row.get("商品代変更") == "商品代を変更する" and not _is_nonnegative_integer(
+                            row.get("商品代（税込）", "")
+                        ):
+                            input_errors.append(f"SKU展開: SKU{index}の変更後商品代（税込）")
                         for axis in sku_split_axes:
                             axis_column = "その他の分け方" if axis == "その他" else axis
                             if not row.get(axis_column):
@@ -2331,7 +2381,8 @@ def render_product_request_tab(
                                     ("商品名", "商品名"), ("バリエーション", "バリエーション名"),
                                     ("品種", "品種"), ("容量", "容量"), ("色", "色"),
                                     ("数量", "数量"), ("配送月", "配送月"),
-                                    ("その他", "その他の分け方"), ("商品代（税込）", "商品代（税込）"),
+                                    ("その他", "その他の分け方"), ("商品代変更", "商品代変更"),
+                                    ("商品代（税込）", "商品代（税込）"),
                                     ("寄附額", "寄附額"), ("在庫数", "在庫数"),
                                     ("温度帯", "温度帯"), ("補足", "補足"),
                                 ) if row.get(column)

@@ -307,7 +307,7 @@ def build_registration_template(
         detail_headers = [
             "登録区分", "商品区分", "既存商品", "品番取得方法", "SKU品番", "商品名", "バリエーション名",
             "品種", "容量", "色", "数量", "配送月", "その他の分け方",
-            "商品代（税込）", "寄附額", "在庫数", "温度帯", "補足",
+            "商品代変更", "商品代（税込）", "寄附額", "在庫数", "温度帯", "補足",
         ]
         detail.append(detail_headers)
         _style_header(detail[1])
@@ -317,11 +317,12 @@ def build_registration_template(
                 cell.fill = yellow
         _add_list_validation(detail, "B2:B200", ["新規", "既存"])
         _add_list_validation(detail, "D2:D200", ["品番を入力する", "品番取得を依頼する"])
-        _add_list_validation(detail, "Q2:Q200", ["常温", "冷蔵", "冷凍"])
+        _add_list_validation(detail, "N2:N200", ["商品代を登録する", "商品代を変更する", "商品代を変更しない"])
+        _add_list_validation(detail, "R2:R200", ["常温", "冷蔵", "冷凍"])
         _style_sheet(detail, {
             "A": 20, "B": 12, "C": 38, "D": 22, "E": 18, "F": 34, "G": 26,
             "H": 18, "I": 16, "J": 14, "K": 12, "L": 16, "M": 24,
-            "N": 18, "O": 16, "P": 14, "Q": 14, "R": 42,
+            "N": 22, "O": 18, "P": 16, "Q": 14, "R": 14, "S": 42,
         })
 
         sku_master = workbook.create_sheet("SKUチョイスマスタ")
@@ -346,7 +347,7 @@ def build_registration_template(
                     f"{sku_name} {sku_code}" if sku_code and not sku_name.endswith(sku_code) else sku_name
                 )
             if row.get("寄附額"):
-                master_values["（条件付き必須）寄附額"] = normalize(row.get("寄附額"))
+                master_values["（条件付き必須）必要寄付金額"] = normalize(row.get("寄附額"))
             if row.get("容量"):
                 master_values["容量"] = normalize(row.get("容量"))
             temperature = normalize(row.get("温度帯", ""))
