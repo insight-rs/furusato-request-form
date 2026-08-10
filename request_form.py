@@ -1637,12 +1637,14 @@ def render_product_request_tab(
         ]
         code_change_requested = False
         if is_new_product:
-            new_product_code_method = st.segmented_control(
-                "品番の用意方法（必須）",
-                ["品番を入力する", "品番取得を依頼する"],
-                default="品番を入力する",
-                key="new_product_code_method",
-            )
+            new_product_code_method = None
+            if product_shape != "SKU展開":
+                new_product_code_method = st.segmented_control(
+                    "品番の用意方法（必須）",
+                    ["品番を入力する", "品番取得を依頼する"],
+                    default="品番を入力する",
+                    key="new_product_code_method",
+                )
             business_fields = []
             business_name_field = find_request_form_field(form_fields, "サイト表示事業者名")
             if business_name_field is not None:
@@ -1659,10 +1661,13 @@ def render_product_request_tab(
                 }
                 and not (
                     field.source_column == MANAGEMENT_CODE_COLUMN
-                    and new_product_code_method == "品番取得を依頼する"
+                    and (
+                        product_shape == "SKU展開"
+                        or new_product_code_method == "品番取得を依頼する"
+                    )
                 )
             ] + business_fields
-            if new_product_code_method == "品番を入力する":
+            if product_shape != "SKU展開" and new_product_code_method == "品番を入力する":
                 management_field = find_request_form_field(form_fields, MANAGEMENT_CODE_COLUMN)
                 if management_field is not None and management_field not in selected_fields:
                     selected_fields.insert(0, management_field)
