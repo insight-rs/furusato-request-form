@@ -187,3 +187,16 @@ def test_initial_request_flow_is_limited_to_correction_or_new_registration():
     assert 'work_category = "新規商品登録" if request_mode == "新規商品登録" else "一般業務"' in source
     assert '"定期便・SKU展開を利用する（試験運用）"' in source
     assert 'product_shape = "単品"' in source
+
+
+def test_new_product_shapes_initialize_correction_only_state():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    initialization = source.index('correction_type = ""')
+    new_product_branch = source.index("if is_new_product:", initialization)
+    donation_condition = source.index("donation_with_cost_requested = (", new_product_branch)
+    assert initialization < new_product_branch < donation_condition
+    assert "selected_change_options: list[RequestFormField | str] = []" in source[
+        initialization:new_product_branch
+    ]

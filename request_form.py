@@ -1765,6 +1765,8 @@ def render_product_request_tab(
             or bool(field.fixed_value)
         ]
         code_change_requested = False
+        correction_type = ""
+        selected_change_options: list[RequestFormField | str] = []
         if is_new_product:
             new_product_code_method = None
             if product_shape != "SKU展開":
@@ -1854,7 +1856,6 @@ def render_product_request_tab(
                     if donation_field is not None:
                         selected_optional_fields.append(donation_field)
             else:
-                selected_change_options = []
                 target_columns = CORRECTION_TYPE_COLUMNS[correction_type]
                 selected_optional_fields = [
                     field for field in visible_fields
