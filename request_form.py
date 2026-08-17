@@ -71,6 +71,7 @@ from registration_excel import (
 
 REQUEST_UNITS = ("商品単位", "自治体対応", "その他")
 WORK_CATEGORIES = ("一般業務", "新規商品登録", "施策", "その他")
+REQUEST_MODES = ("修正", "新規商品登録")
 DONATION_COLUMN = "（条件付き必須）必要寄付金額"
 POINTS_COLUMN = "（条件付き必須）ポイント"
 
@@ -1334,6 +1335,11 @@ def _load_saved_request_into_draft(
         saved_request.work_category
         if saved_request.work_category in WORK_CATEGORIES else "一般業務"
     )
+    st.session_state.request_mode = (
+        "新規商品登録"
+        if saved_request.work_category == "新規商品登録"
+        else "修正"
+    )
     st.session_state.request_municipality_id = saved_request.municipality_id
     st.session_state.request_selected_products = selected_products
     st.session_state.request_selected_form_fields = selected_fields
@@ -1427,22 +1433,18 @@ def render_product_request_tab(
         return
 
     with st.container(border=True):
-        request_unit = st.segmented_control(
-            "対応単位",
-            REQUEST_UNITS,
-            default="商品単位",
+        request_mode = st.segmented_control(
+            "依頼内容",
+            REQUEST_MODES,
+            default="修正",
             required=True,
-            key="request_unit",
+            key="request_mode",
             width="stretch",
         )
-        work_category = st.segmented_control(
-            "業務種別",
-            WORK_CATEGORIES,
-            default="一般業務",
-            required=True,
-            key="request_work_category",
-            width="stretch",
-        )
+        request_unit = "商品単位"
+        work_category = "新規商品登録" if request_mode == "新規商品登録" else "一般業務"
+        st.session_state.request_unit = request_unit
+        st.session_state.request_work_category = work_category
         target_municipality_id = st.selectbox(
             "自治体",
             options=list(municipality_names),
@@ -1509,14 +1511,24 @@ def render_product_request_tab(
     if request_unit == "商品単位" or is_new_product:
         with st.container(border=True):
             st.subheader("商品形態")
-            product_shape = st.segmented_control(
-                "登録する商品の構成",
-                PRODUCT_SHAPES,
-                default="単品",
-                required=True,
-                key="request_product_shape",
-                width="stretch",
+            use_advanced_product_shape = st.checkbox(
+                "定期便・SKU展開を利用する（試験運用）",
+                value=False,
+                key="request_use_advanced_product_shape",
+                help="初期運用では単品を推奨します。必要な場合のみ有効にしてください。",
             )
+            if use_advanced_product_shape:
+                product_shape = st.segmented_control(
+                    "登録する商品の構成",
+                    PRODUCT_SHAPES,
+                    default="単品",
+                    required=True,
+                    key="request_product_shape",
+                    width="stretch",
+                )
+            else:
+                product_shape = "単品"
+                st.caption("現在の推奨運用：単品（定期便・SKU展開は必要な場合のみ利用）")
             if is_new_product:
                 st.caption(
                     "単品・定期便・SKU展開ごとに、チョイス全項目を収録した公式Excelを利用できます。"

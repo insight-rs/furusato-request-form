@@ -175,3 +175,15 @@ def test_donation_field_detection_handles_master_label_variants():
     helper = source[source.index("def _is_donation_field"):source.index("def _sort_change_fields")]
     assert 'field.source_column == POINTS_COLUMN' in helper
     assert '("必要寄付金額", "寄附額", "寄付額")' in helper
+
+
+def test_initial_request_flow_is_limited_to_correction_or_new_registration():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'REQUEST_MODES = ("修正", "新規商品登録")' in source
+    assert '"依頼内容",\n            REQUEST_MODES' in source
+    assert 'request_unit = "商品単位"' in source
+    assert 'work_category = "新規商品登録" if request_mode == "新規商品登録" else "一般業務"' in source
+    assert '"定期便・SKU展開を利用する（試験運用）"' in source
+    assert 'product_shape = "単品"' in source
