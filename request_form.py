@@ -1281,6 +1281,20 @@ def _render_backlog_custom_field(custom_field, field_key: str):
     return st.text_input(label, key=field_key)
 
 
+def _custom_field_definition_signature(custom_fields) -> tuple:
+    """画面表示時と送信直前のBacklogカスタム属性定義を比較する。"""
+
+    return tuple(
+        (
+            field.field_id,
+            field.type_id,
+            field.required,
+            tuple((option.option_id, option.name) for option in field.options),
+        )
+        for field in custom_fields
+    )
+
+
 def _load_saved_request_into_draft(
     *,
     saved_request,
@@ -2979,11 +2993,44 @@ def render_product_request_tab(
                 and image_child_start_date > image_child_due_date
             ):
                 raise ValueError("画像子課題の期限日は開始日以降を指定してください。")
+            # 自治体設定の更新直後に古いStreamlitキャッシュで送信すると、
+            # Backlog側の必須カスタム属性が不足して、マスタ保存後にAPIだけ失敗する。
+            # 全自治体について保存前に最新定義を直接読み込み、画面表示時との差を検知する。
+            latest_all_custom_fields = load_backlog_custom_fields(
+                config_spreadsheet_id, str(credentials_path)
+            )
+            latest_target_custom_fields = get_applicable_custom_fields(
+                latest_all_custom_fields,
+                target_municipality_id,
+                selected_issue_type.name,
+                required_only=False,
+            )
+            latest_image_child_custom_fields = (
+                get_applicable_custom_fields(
+                    latest_all_custom_fields,
+                    target_municipality_id,
+                    target_image_issue_type.name,
+                    required_only=False,
+                )
+                if has_image_request and target_image_issue_type is not None
+                else []
+            )
+            if (
+                _custom_field_definition_signature(target_custom_fields)
+                != _custom_field_definition_signature(latest_target_custom_fields)
+                or _custom_field_definition_signature(image_child_custom_fields)
+                != _custom_field_definition_signature(latest_image_child_custom_fields)
+            ):
+                _load_backlog_custom_fields.clear()
+                raise ValueError(
+                    "Backlogカスタム属性が更新されています。画面を再読み込みし、"
+                    "表示された必須項目を入力してから保存してください。"
+                )
             custom_field_parameters = build_custom_field_parameters(
-                target_custom_fields, custom_field_values
+                latest_target_custom_fields, custom_field_values
             )
             image_child_custom_parameters = build_custom_field_parameters(
-                image_child_custom_fields, image_child_custom_values
+                latest_image_child_custom_fields, image_child_custom_values
             )
             editing_source_request_id = str(
                 st.session_state.get("editing_source_request_id", "")
@@ -3050,11 +3097,6 @@ def render_product_request_tab(
                     st.warning(
                         f"依頼ID：{result.request_id} は保存しましたが、変更後データExcelを生成できませんでした。"
                     )
-            st.session_state.correction_lines = []
-            st.session_state.pop("new_product_backlog_values", None)
-            st.session_state.pop("new_product_excel_values", None)
-            st.session_state.pop("registration_excel_import", None)
-            st.session_state.pop("registration_excel_fingerprint", None)
             try:
                 generated_summary, description = build_backlog_issue_content(
                     request, correction_lines
@@ -3088,10 +3130,12 @@ def render_product_request_tab(
                         custom_field_parameters=custom_field_parameters,
                         access_token=backlog_access_token,
                     )
-            except Exception:
+            except Exception as error:
                 st.warning(
                     f"依頼ID：{result.request_id} は商品情報マスタへ保存しましたが、"
-                    "Backlogへの起票に失敗しました。再送前に依頼IDを確認してください。"
+                    "Backlogへの起票に失敗しました。"
+                    f"理由：{error} 入力内容は画面に保持しています。"
+                    "再送前に依頼IDを確認してください。"
                 )
                 return
             try:
@@ -3195,6 +3239,12 @@ def render_product_request_tab(
                         f"依頼を保存し、Backlog親課題 {issue.issue_key} と"
                         f"画像子課題 1件を起票しました。{attachment_message}"
                     )
+            # 親課題の起票と依頼IDへの記録が完了した後だけ入力内容をクリアする。
+            st.session_state.correction_lines = []
+            st.session_state.pop("new_product_backlog_values", None)
+            st.session_state.pop("new_product_excel_values", None)
+            st.session_state.pop("registration_excel_import", None)
+            st.session_state.pop("registration_excel_fingerprint", None)
             if editing_source_request_id:
                 st.session_state.pop("editing_source_request_id", None)
                 st.session_state.pop("editing_source_backlog_issue_key", None)
