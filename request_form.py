@@ -1381,6 +1381,14 @@ def render_product_request_tab(
         "商品ごとに、上段の現在値を確認して下段の変更後値を入力し、依頼を作成します。"
         "起票時には変更後データExcelと、必要に応じて追加ファイルをBacklogへ添付します。"
     )
+    if st.button(
+        "商品・自治体マスタを再読み込み",
+        icon=":material/refresh:",
+        type="secondary",
+        help="固定PCで取得した最新の商品・自治体情報を読み直します。",
+    ):
+        _load_products.clear()
+        st.success("商品・自治体マスタを再読み込みしました。")
 
     try:
         with st.spinner("商品・フォーム・施策マスタを読み込んでいます。"):
