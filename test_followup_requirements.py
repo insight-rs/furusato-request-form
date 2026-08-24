@@ -241,3 +241,15 @@ def test_multi_value_custom_field_uses_backlog_issue_api_parameter_name():
 
     assert parameters == {"customField_324256": ["101", "102"]}
     assert "customField_324256[]" not in parameters
+
+
+def test_failed_backlog_request_retry_does_not_save_duplicate_master_rows():
+    source = Path(__file__).with_name("request_form.py").read_text(encoding="utf-8")
+
+    assert "retrying_failed_backlog = bool(" in source
+    retry_branch = source.index("if retrying_failed_backlog:")
+    normal_save = source.index("result = save_product_correction_request(", retry_branch)
+    assert "request = replace(request, request_id=editing_source_request_id)" in source[
+        retry_branch:normal_save
+    ]
+    assert "else:" in source[retry_branch:normal_save]
