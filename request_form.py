@@ -59,6 +59,7 @@ from product_requests import (
     create_product_correction_request,
     load_product_references,
     load_saved_product_correction_request,
+    load_saved_product_correction_request_summaries,
     save_product_correction_request,
     update_image_request_backlog_child,
     update_product_request_backlog_parent,
@@ -268,6 +269,22 @@ def _allowed_municipality_ids(users, login_email: str) -> set[str]:
     }
 
 
+def _own_requester_keys(users, login_email: str) -> set[tuple[str, str]]:
+    """ログイン利用者本人の自治体ID・Backlog表示名の組を返す。"""
+
+    target = str(login_email or "").strip().lower()
+    if not target:
+        return set()
+    return {
+        (user.municipality_id, user.name)
+        for user in users
+        if target in {
+            str(user.login_address or "").strip().lower(),
+            str(user.mail_address or "").strip().lower(),
+        }
+    }
+
+
 @st.cache_data(ttl=600, max_entries=2)
 def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
     return load_product_references(
@@ -313,6 +330,19 @@ def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
     return load_backlog_project_users(
         spreadsheet_id=config_spreadsheet_id,
         credentials_path=Path(credentials_path_text),
+    )
+
+
+@st.cache_data(ttl=60, max_entries=4, show_spinner=False)
+def _load_saved_request_summaries(
+    product_spreadsheet_id: str,
+    credentials_path_text: str,
+    allowed_municipality_ids: tuple[str, ...],
+):
+    return load_saved_product_correction_request_summaries(
+        spreadsheet_id=product_spreadsheet_id,
+        credentials_path=Path(credentials_path_text),
+        allowed_municipality_ids=allowed_municipality_ids,
     )
 
 
@@ -1476,6 +1506,7 @@ def render_product_request_tab(
         help="固定PCで取得した最新の商品・自治体情報を読み直します。",
     ):
         _load_products.clear()
+        _load_saved_request_summaries.clear()
         st.success("商品・自治体マスタを再読み込みしました。")
 
     try:
@@ -1491,6 +1522,9 @@ def render_product_request_tab(
         st.exception(error)
         return
 
+    allowed_municipality_ids = {
+        product.municipality_id for product in products
+    }
     if login_email:
         allowed_municipality_ids = _allowed_municipality_ids(
             all_backlog_users, login_email
@@ -1509,24 +1543,184 @@ def render_product_request_tab(
     with st.container(border=True):
         st.subheader("登録済み依頼を再編集")
         st.caption(
-            "Backlog親課題キーまたは依頼IDを入力すると、保存済みの変更明細をフォームへ戻せます。"
+            "過去の依頼を修正するには、下の履歴一覧から1件を選ぶか、"
+            "Backlog課題キーまたは依頼IDを入力して履歴を読み込みます。"
             "保存時は同じBacklog親課題を更新し、商品情報マスタには改訂履歴を追加します。"
         )
-        history_lookup = st.text_input(
-            "Backlog親課題キーまたは依頼ID",
-            placeholder="例：PROJECT-123 または PR-20260805-xxxx",
-            key="request_history_lookup",
+        st.info(
+            "一覧に表示されるのは保存済みの依頼です。別担当者の依頼も、"
+            "自分が閲覧できる自治体であれば再編集できます。"
+            "まだ「依頼を保存」を押していない入力途中の内容は表示されません。",
+            icon=":material/info:",
         )
-        if st.button("履歴を読み込む", type="secondary"):
+
+        history_scope = st.segmented_control(
+            "表示する履歴",
+            ("自分の依頼", "閲覧可能な自治体の全依頼"),
+            default="自分の依頼",
+            key="request_history_scope",
+        )
+        try:
+            with st.spinner("保存済み依頼の一覧を読み込んでいます。"):
+                saved_summaries = _load_saved_request_summaries(
+                    product_spreadsheet_id,
+                    str(credentials_path),
+                    tuple(sorted(allowed_municipality_ids)),
+                )
+        except Exception as error:
+            saved_summaries = []
+            st.warning("保存済み依頼の一覧を読み込めませんでした。IDの直接入力は利用できます。")
+            st.exception(error)
+
+        own_requester_keys = _own_requester_keys(all_backlog_users, login_email)
+        visible_summaries = saved_summaries
+        if history_scope == "自分の依頼":
+            visible_summaries = [
+                summary for summary in visible_summaries
+                if (summary.municipality_id, summary.requester) in own_requester_keys
+            ]
+
+        history_municipalities = {
+            summary.municipality_id: summary.municipality_name
+            for summary in visible_summaries
+        }
+        municipality_filter_options = [""] + sorted(
+            history_municipalities,
+            key=lambda municipality_id: _municipality_sort_key(
+                history_municipalities[municipality_id], municipality_id
+            ),
+        )
+        if (
+            st.session_state.get("request_history_municipality_filter", "")
+            not in municipality_filter_options
+        ):
+            st.session_state.request_history_municipality_filter = ""
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            history_municipality_filter = st.selectbox(
+                "自治体で絞り込み",
+                municipality_filter_options,
+                format_func=lambda municipality_id: (
+                    history_municipalities[municipality_id]
+                    if municipality_id else "すべて"
+                ),
+                key="request_history_municipality_filter",
+            )
+            history_search = st.text_input(
+                "履歴を検索",
+                placeholder="自治体名・依頼者・Backlog課題キー・依頼ID",
+                key="request_history_search",
+            )
+
+        if history_municipality_filter:
+            visible_summaries = [
+                summary for summary in visible_summaries
+                if summary.municipality_id == history_municipality_filter
+            ]
+        search_text = history_search.strip().casefold()
+        if search_text:
+            visible_summaries = [
+                summary for summary in visible_summaries
+                if search_text in " ".join((
+                    summary.request_id,
+                    summary.requested_at,
+                    summary.requester,
+                    summary.municipality_name,
+                    summary.request_kind,
+                    summary.backlog_issue_key,
+                    summary.status,
+                )).casefold()
+            ]
+
+        displayed_summaries = visible_summaries[:200]
+        selected_summary = None
+        if displayed_summaries:
+            history_frame = pd.DataFrame([{
+                "依頼日時": summary.requested_at,
+                "自治体": summary.municipality_name,
+                "依頼者": summary.requester,
+                "種別": summary.request_kind,
+                "Backlog課題": summary.backlog_issue_key or "未起票",
+                "状態": summary.status,
+                "依頼ID": summary.request_id,
+            } for summary in displayed_summaries])
+            st.caption("再編集したい依頼の行をクリックして選択してください。")
+            history_event = st.dataframe(
+                history_frame,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="request_history_table",
+                column_config={
+                    "依頼日時": st.column_config.TextColumn("依頼日時", pinned=True),
+                    "依頼ID": st.column_config.TextColumn("依頼ID"),
+                },
+            )
+            selected_rows = history_event.selection.rows
+            if selected_rows:
+                selected_summary = displayed_summaries[selected_rows[0]]
+                if selected_summary.backlog_issue_url:
+                    st.link_button(
+                        f"Backlog課題 {selected_summary.backlog_issue_key} を開く",
+                        selected_summary.backlog_issue_url,
+                        icon=":material/open_in_new:",
+                    )
+                if (
+                    selected_summary.municipality_id,
+                    selected_summary.requester,
+                ) not in own_requester_keys:
+                    st.info(
+                        f"別担当者（{selected_summary.requester}）の依頼です。"
+                        "読み込んで保存すると同じBacklog課題を更新します。"
+                    )
+        else:
+            st.caption("条件に一致する保存済み依頼はありません。")
+        if len(visible_summaries) > len(displayed_summaries):
+            st.caption("最新200件を表示しています。自治体または検索欄で絞り込んでください。")
+
+        lookup_to_load = ""
+        if st.button(
+            "選択した依頼を読み込む",
+            type="primary",
+            icon=":material/edit:",
+            disabled=selected_summary is None,
+        ) and selected_summary is not None:
+            lookup_to_load = selected_summary.lookup_value
+
+        with st.expander("Backlog課題キー・依頼IDを直接入力する場合"):
+            st.markdown(
+                "入力できる番号は次の2種類です。\n\n"
+                "- **Backlog課題キー**：Backlog課題画面に表示される `PROJECT-123` 形式の番号\n"
+                "- **依頼ID**：商品マスタの「商品修正依頼」シートにある `PR-20260824-xxxx` 形式の番号\n\n"
+                "どちらか一方を入力してください。通常はBacklog課題キーが探しやすくおすすめです。"
+            )
+            history_lookup = st.text_input(
+                "Backlog課題キーまたは依頼ID",
+                placeholder="例：PROJECT-123 または PR-20260824-xxxx",
+                key="request_history_lookup",
+            )
+            if st.button(
+                "入力した番号から履歴を読み込む",
+                type="secondary",
+                icon=":material/search:",
+            ):
+                lookup_to_load = history_lookup.strip()
+                if not lookup_to_load:
+                    st.warning("Backlog課題キーまたは依頼IDを入力してください。")
+
+        if lookup_to_load:
             try:
                 with st.spinner("保存済み依頼を読み込んでいます。"):
                     saved_request = load_saved_product_correction_request(
                         spreadsheet_id=product_spreadsheet_id,
                         credentials_path=credentials_path,
-                        lookup_value=history_lookup,
+                        lookup_value=lookup_to_load,
+                        allowed_municipality_ids=allowed_municipality_ids,
                     )
                 if saved_request is None:
-                    st.warning("指定した依頼IDまたはBacklog親課題キーの履歴が見つかりません。")
+                    st.warning(
+                        "指定した番号の履歴が見つからないか、"
+                        "このアカウントでは対象自治体を閲覧できません。"
+                    )
                 else:
                     missing_products = _load_saved_request_into_draft(
                         saved_request=saved_request,
@@ -3284,6 +3478,7 @@ def render_product_request_tab(
                     request=request,
                     lines=correction_lines,
                 )
+                _load_saved_request_summaries.clear()
             comparison_path = None
             master_correction_lines = [
                 line for line in correction_lines
