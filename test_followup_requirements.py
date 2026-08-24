@@ -326,3 +326,34 @@ def test_urgent_request_prefixes_backlog_issue_title():
 
     assert 'st.checkbox(\n                "至急"' in source
     assert 'issue_summary = f"【至急】{issue_summary}"' in source
+
+
+def test_municipality_sort_order_runs_from_hokkaido_to_okinawa():
+    from request_form import _municipality_sort_key
+
+    names = ["沖縄県那覇市", "福島県相馬市", "北海道江別市", "青森県平内町"]
+
+    assert sorted(names, key=_municipality_sort_key) == [
+        "北海道江別市", "青森県平内町", "福島県相馬市", "沖縄県那覇市"
+    ]
+
+
+def test_public_product_filter_uses_choice_display_flag_one():
+    from product_requests import ProductReference
+    from request_form import _is_public_product
+
+    def product(display_value: str) -> ProductReference:
+        return ProductReference(
+            municipality_id="sample",
+            municipality_name="北海道サンプル町",
+            product_id="1",
+            original_product_id="1",
+            product_name="商品",
+            business_id="1",
+            business_name="事業者",
+            source_row=(("（必須）表示有無", display_value),),
+        )
+
+    assert _is_public_product(product("1")) is True
+    assert _is_public_product(product("0")) is False
+    assert _is_public_product(product("")) is False
