@@ -3005,7 +3005,7 @@ def render_product_request_tab(
             # Backlog側の必須カスタム属性が不足して、マスタ保存後にAPIだけ失敗する。
             # 全自治体について保存前に最新定義を直接読み込み、画面表示時との差を検知する。
             latest_all_custom_fields = load_backlog_custom_fields(
-                config_spreadsheet_id, str(credentials_path)
+                config_spreadsheet_id, credentials_path
             )
             latest_target_custom_fields = get_applicable_custom_fields(
                 latest_all_custom_fields,
