@@ -136,8 +136,15 @@ def build_custom_field_parameters(
                         f"Backlog属性「{field.name}」の選択肢「{value}」がありません。"
                     )
                 resolved_values.append(option_id)
-            key = f"customField_{field.field_id}[]" if field.type_id in MULTI_VALUE_TYPE_IDS else f"customField_{field.field_id}"
-            parameters[key] = resolved_values if field.type_id in MULTI_VALUE_TYPE_IDS else resolved_values[0]
+            # Backlogの課題追加・更新APIでは、複数選択のカスタム属性も
+            # パラメータ名は ``customField_{id}``（[]なし）で送る。
+            # 複数値は urlencode(..., doseq=True) が同じキーを繰り返して展開する。
+            key = f"customField_{field.field_id}"
+            parameters[key] = (
+                resolved_values
+                if field.type_id in MULTI_VALUE_TYPE_IDS
+                else resolved_values[0]
+            )
         elif field.type_id == "3":
             try:
                 float(normalized_values[0])
