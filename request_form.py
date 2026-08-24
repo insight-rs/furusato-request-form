@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import os
 import re
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
+import jpholiday
 import pandas as pd
 import streamlit as st
 
@@ -179,6 +181,62 @@ CORRECTION_TYPE_COLUMNS = {
     "商品説明文・容量変更": {"説明", "容量"},
 }
 BACKLOG_ONLY_PREFIX = "【Backlogのみ】"
+JST = ZoneInfo("Asia/Tokyo")
+SAME_DAY_CORRECTION_TYPES = {"在庫数変更", "表示・非表示切り替え"}
+
+
+def _is_business_day(value: date) -> bool:
+    """土日と日本の国民の祝日を除いた営業日かを返す。"""
+
+    return value.weekday() < 5 and not jpholiday.is_holiday(value)
+
+
+def _roll_forward_to_business_day(value: date) -> date:
+    """土日祝に当たる日を次の営業日へ繰り越す。"""
+
+    result = value
+    while not _is_business_day(result):
+        result += timedelta(days=1)
+    return result
+
+
+def _default_backlog_due_date(
+    *, request_date: date, is_new_product: bool, correction_type: str
+) -> date:
+    """依頼内容に応じたBacklog期限日の初期値を返す。"""
+
+    if is_new_product:
+        calendar_days = 5
+    elif correction_type in SAME_DAY_CORRECTION_TYPES:
+        calendar_days = 0
+    else:
+        calendar_days = 3
+    return _roll_forward_to_business_day(
+        request_date + timedelta(days=calendar_days)
+    )
+
+
+def _set_date_default(*, key: str, context: str, value: date) -> None:
+    """依頼条件が変わった時だけ日付入力の初期値を更新する。"""
+
+    context_key = f"{key}_auto_context"
+    if st.session_state.get(context_key) == context:
+        return
+    st.session_state[key] = value
+    st.session_state[context_key] = context
+
+
+def _allowed_municipality_ids(users, login_email: str) -> set[str]:
+    """ログインメールがユーザー権限マスタで担当する自治体IDを返す。"""
+
+    target = str(login_email or "").strip().lower()
+    if not target:
+        return set()
+    return {
+        user.municipality_id
+        for user in users
+        if str(user.login_address or "").strip().lower() == target
+    }
 
 
 @st.cache_data(ttl=600, max_entries=2)
@@ -1396,10 +1454,28 @@ def render_product_request_tab(
             products = _load_products(product_spreadsheet_id, str(credentials_path))
             form_fields = _load_form_fields(config_spreadsheet_id, str(credentials_path))
             policies = _load_policies(config_spreadsheet_id, str(credentials_path))
+            all_backlog_users = _load_backlog_users(
+                config_spreadsheet_id, str(credentials_path)
+            )
     except Exception as error:
         st.error("依頼フォーム用のマスタを読み込めませんでした。")
         st.exception(error)
         return
+
+    if login_email:
+        allowed_municipality_ids = _allowed_municipality_ids(
+            all_backlog_users, login_email
+        )
+        products = [
+            product for product in products
+            if product.municipality_id in allowed_municipality_ids
+        ]
+        if not allowed_municipality_ids:
+            st.error(
+                "ログイン中のメールアドレスに利用可能な自治体が登録されていません。"
+                "ユーザー権限マスタの「Googleログイン用アドレス」を確認してください。"
+            )
+            return
 
     with st.container(border=True):
         st.subheader("登録済み依頼を再編集")
@@ -1463,14 +1539,20 @@ def render_product_request_tab(
         return
 
     with st.container(border=True):
-        request_mode = st.segmented_control(
-            "依頼内容",
-            REQUEST_MODES,
-            default="修正",
-            required=True,
-            key="request_mode",
-            width="stretch",
-        )
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            request_mode = st.segmented_control(
+                "依頼内容",
+                REQUEST_MODES,
+                default="修正",
+                required=True,
+                key="request_mode",
+                width="stretch",
+            )
+            urgent_request = st.checkbox(
+                "至急",
+                key="request_urgent",
+                help="チェックするとBacklog課題タイトルの先頭に【至急】を付けます。",
+            )
         request_unit = "商品単位"
         work_category = "新規商品登録" if request_mode == "新規商品登録" else "一般業務"
         st.session_state.request_unit = request_unit
@@ -1781,6 +1863,7 @@ def render_product_request_tab(
                 target_backlog_config.image_child_issue_type
             )
 
+    correction_type = ""
     if (request_unit == "商品単位" or is_new_product) and selected_products:
         visible_fields = _sort_change_fields(
             _visible_form_fields(form_fields, is_new_product=is_new_product)
@@ -1795,7 +1878,6 @@ def render_product_request_tab(
             or bool(field.fixed_value)
         ]
         code_change_requested = False
-        correction_type = ""
         selected_change_options: list[RequestFormField | str] = []
         if is_new_product:
             new_product_code_method = None
@@ -2877,11 +2959,28 @@ def render_product_request_tab(
                 key=f"backlog_start_date_{target_municipality_id}",
             )
         with due_column:
+            automatic_due_date = _default_backlog_due_date(
+                request_date=datetime.now(JST).date(),
+                is_new_product=is_new_product,
+                correction_type=correction_type,
+            )
+            due_date_key = f"backlog_due_date_{target_municipality_id}"
+            due_date_context = "|".join((
+                target_municipality_id,
+                request_mode,
+                correction_type,
+                datetime.now(JST).date().isoformat(),
+            ))
+            _set_date_default(
+                key=due_date_key,
+                context=due_date_context,
+                value=automatic_due_date,
+            )
             backlog_due_date = st.date_input(
-                "期限日（任意）",
-                value=None,
+                "期限日（自動設定）",
                 format="YYYY-MM-DD",
-                key=f"backlog_due_date_{target_municipality_id}",
+                key=due_date_key,
+                help="在庫数・表示切替は当日、その他の修正は3日後、新規登録は5日後です。土日祝は次の平日に繰り越します。",
             )
     if create_backlog_issue and target_custom_fields:
         st.caption("Backlogカスタム属性")
@@ -3143,6 +3242,8 @@ def render_product_request_tab(
                     request, correction_lines
                 )
                 issue_summary = backlog_issue_title.strip() or generated_summary
+                if urgent_request and not issue_summary.startswith("【至急】"):
+                    issue_summary = f"【至急】{issue_summary}"
                 if editing_source_backlog_issue_key:
                     issue = update_issue(
                         config=target_backlog_config,
