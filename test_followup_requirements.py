@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from backlog_custom_fields import load_backlog_custom_fields
+from backlog_custom_fields import (
+    BacklogCustomField,
+    BacklogCustomFieldOption,
+    build_custom_field_parameters,
+    load_backlog_custom_fields,
+)
 from backlog_config import build_backlog_configs
 from product_requests import (
     ProductCorrectionLine,
@@ -211,3 +216,28 @@ def test_custom_field_loader_accepts_string_credential_path():
 
     with pytest.raises(FileNotFoundError):
         load_backlog_custom_fields("spreadsheet-id", missing_credentials)
+
+
+def test_multi_value_custom_field_uses_backlog_issue_api_parameter_name():
+    field = BacklogCustomField(
+        municipality_id="kaga",
+        municipality_name="石川県加賀市",
+        project_id="1",
+        issue_type_name="既存ページ修正",
+        issue_type_id="2",
+        name="既存ページ修正内容",
+        field_id="324256",
+        type_id="7",
+        required=True,
+        options=(
+            BacklogCustomFieldOption(name="商品情報", option_id="101"),
+            BacklogCustomFieldOption(name="画像", option_id="102"),
+        ),
+    )
+
+    parameters = build_custom_field_parameters(
+        [field], {"既存ページ修正内容": ["商品情報", "画像"]}
+    )
+
+    assert parameters == {"customField_324256": ["101", "102"]}
+    assert "customField_324256[]" not in parameters
