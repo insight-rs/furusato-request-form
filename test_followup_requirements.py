@@ -411,3 +411,13 @@ def test_history_screen_explains_identifiers_and_supports_other_requesters():
     assert "商品マスタの「商品修正依頼」シート" in source
     assert "まだ「依頼を保存」を押していない入力途中の内容は表示されません。" in source
     assert "allowed_municipality_ids=allowed_municipality_ids" in source
+
+
+def test_saved_request_history_is_collapsed_by_default():
+    source = Path(__file__).with_name("request_form.py").read_text(encoding="utf-8")
+
+    history_start = source.index('"登録済み依頼を再編集",')
+    history_section = source[history_start:history_start + 220]
+    assert "with st.expander(" in source[history_start - 40:history_start]
+    assert "expanded=False" in history_section
+    assert 'icon=":material/history:"' in history_section
