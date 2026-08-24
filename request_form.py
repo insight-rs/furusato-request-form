@@ -77,6 +77,17 @@ WORK_CATEGORIES = ("一般業務", "新規商品登録", "施策", "その他")
 REQUEST_MODES = ("修正", "新規商品登録")
 DONATION_COLUMN = "（条件付き必須）必要寄付金額"
 POINTS_COLUMN = "（条件付き必須）ポイント"
+PREFECTURES = (
+    "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+    "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+    "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
+    "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県",
+    "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+    "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県",
+    "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+)
+PREFECTURE_ORDER = {name: index for index, name in enumerate(PREFECTURES)}
+PUBLIC_DISPLAY_COLUMN = "（必須）表示有無"
 
 
 def _required_label(label: str) -> str:
@@ -85,6 +96,24 @@ def _required_label(label: str) -> str:
     if "必須" not in label:
         return label
     return label.replace("必須", ":red[必須]")
+
+
+def _municipality_sort_key(municipality_name: str, municipality_id: str = ""):
+    """自治体を北海道から沖縄県の都道府県順に並べる。"""
+
+    normalized_name = str(municipality_name or "").strip()
+    prefecture_index = len(PREFECTURES)
+    for prefecture in PREFECTURES:
+        if normalized_name.startswith(prefecture):
+            prefecture_index = PREFECTURE_ORDER[prefecture]
+            break
+    return prefecture_index, normalized_name, str(municipality_id or "")
+
+
+def _is_public_product(product: ProductReference) -> bool:
+    """チョイスマスタの表示有無が1の商品かを返す。"""
+
+    return str(product.source_values().get(PUBLIC_DISPLAY_COLUMN, "")).strip() == "1"
 WASTE_FLAG_COLUMN = "（必須）地域の生産者応援の品（訳ありの品）"
 WASTE_BRANCH_COLUMNS = (
     "規格外になった理由",
@@ -1559,7 +1588,12 @@ def render_product_request_tab(
         st.session_state.request_work_category = work_category
         target_municipality_id = st.selectbox(
             "自治体",
-            options=list(municipality_names),
+            options=sorted(
+                municipality_names,
+                key=lambda municipality_id: _municipality_sort_key(
+                    municipality_names[municipality_id], municipality_id
+                ),
+            ),
             format_func=lambda municipality_id: municipality_names[municipality_id],
             key="request_municipality_id",
         )
@@ -1734,18 +1768,41 @@ def render_product_request_tab(
         municipality_products = [
             product for product in products if product.municipality_id == target_municipality_id
         ]
-        business_names = sorted({product.business_name for product in municipality_products if product.business_name})
         with st.container(border=True):
             st.subheader("対象商品の選択")
+            public_products_only = st.checkbox(
+                "現在公開中の商品のみを表示",
+                value=False,
+                key="request_public_products_only",
+                help="チェックすると、チョイスマスタの「表示有無」が1の商品だけを表示します。",
+            )
+            visible_municipality_products = (
+                [product for product in municipality_products if _is_public_product(product)]
+                if public_products_only else municipality_products
+            )
+            business_names = sorted({
+                product.business_name
+                for product in visible_municipality_products
+                if product.business_name
+            })
+            business_options = ["すべて"] + business_names
+            if st.session_state.get("request_business_name") not in business_options:
+                st.session_state.request_business_name = "すべて"
             business_name = st.selectbox(
                 "事業者",
-                options=["すべて"] + business_names,
+                options=business_options,
                 key="request_business_name",
             )
             candidate_products = [
-                product for product in municipality_products
+                product for product in visible_municipality_products
                 if business_name == "すべて" or product.business_name == business_name
             ]
+            previous_products = st.session_state.get("request_selected_products", [])
+            if previous_products:
+                st.session_state.request_selected_products = [
+                    product for product in previous_products
+                    if product in candidate_products
+                ]
             selected_products = st.multiselect(
                 "商品（複数選択可）",
                 options=candidate_products,
@@ -1753,6 +1810,11 @@ def render_product_request_tab(
                 placeholder="商品名または品番で検索して選択してください",
                 key="request_selected_products",
             )
+            if public_products_only:
+                st.caption(
+                    f"公開中の商品：{len(candidate_products):,}件"
+                    + ("（選択した事業者内）" if business_name != "すべて" else "")
+                )
             _render_selected_product_preview(selected_products)
     elif is_new_product:
         municipality_products = [
