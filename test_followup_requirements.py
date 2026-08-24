@@ -15,6 +15,7 @@ from product_requests import (
     ProductCorrectionLine,
     ProductCorrectionRequest,
     ProductReference,
+    build_saved_product_correction_request_summaries,
     build_backlog_issue_content,
 )
 
@@ -357,3 +358,56 @@ def test_public_product_filter_uses_choice_display_flag_one():
     assert _is_public_product(product("1")) is True
     assert _is_public_product(product("0")) is False
     assert _is_public_product(product("")) is False
+
+
+def test_saved_request_history_is_permission_filtered_and_newest_first():
+    rows = [
+        {
+            "依頼ID": "PR-OLD",
+            "依頼日時": "2026-08-20 09:00:00",
+            "依頼者": "担当A",
+            "自治体ID": "allowed",
+            "自治体名": "北海道許可町",
+            "依頼種別": "商品修正",
+            "Backlog親課題キー": "TEST-1",
+            "Backlog親課題URL": "https://example.test/TEST-1",
+            "状態": "受付",
+        },
+        {
+            "依頼ID": "PR-NEW",
+            "依頼日時": "2026-08-24 10:00:00",
+            "依頼者": "担当B",
+            "自治体ID": "allowed",
+            "自治体名": "北海道許可町",
+            "依頼種別": "商品修正",
+            "Backlog親課題キー": "",
+            "状態": "Backlog起票待ち",
+        },
+        {
+            "依頼ID": "PR-HIDDEN",
+            "依頼日時": "2026-08-25 10:00:00",
+            "依頼者": "担当C",
+            "自治体ID": "forbidden",
+            "自治体名": "権限外市",
+        },
+    ]
+
+    summaries = build_saved_product_correction_request_summaries(
+        rows, allowed_municipality_ids={"allowed"}
+    )
+
+    assert [summary.request_id for summary in summaries] == ["PR-NEW", "PR-OLD"]
+    assert summaries[0].lookup_value == "PR-NEW"
+    assert summaries[1].lookup_value == "TEST-1"
+    assert all(summary.municipality_id == "allowed" for summary in summaries)
+
+
+def test_history_screen_explains_identifiers_and_supports_other_requesters():
+    source = Path(__file__).with_name("request_form.py").read_text(encoding="utf-8")
+
+    assert '("自分の依頼", "閲覧可能な自治体の全依頼")' in source
+    assert "再編集したい依頼の行をクリックして選択してください。" in source
+    assert "Backlog課題キー**" in source
+    assert "商品マスタの「商品修正依頼」シート" in source
+    assert "まだ「依頼を保存」を押していない入力途中の内容は表示されません。" in source
+    assert "allowed_municipality_ids=allowed_municipality_ids" in source
