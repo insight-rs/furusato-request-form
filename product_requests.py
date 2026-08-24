@@ -209,6 +209,28 @@ class SavedProductCorrectionRequest:
     details: tuple[SavedProductCorrectionDetail, ...]
 
 
+@dataclass(frozen=True)
+class SavedProductCorrectionRequestSummary:
+    """再編集候補一覧に表示する保存済み依頼の概要。"""
+
+    request_id: str
+    requested_at: str
+    requester: str
+    municipality_id: str
+    municipality_name: str
+    request_kind: str
+    backlog_issue_key: str
+    backlog_issue_url: str
+    status: str
+    updated_at: str
+
+    @property
+    def lookup_value(self) -> str:
+        """Backlog起票済みなら課題キー、未起票なら依頼IDを返す。"""
+
+        return self.backlog_issue_key or self.request_id
+
+
 def _required(value: object, label: str) -> str:
     normalized = normalize(value)
     if not normalized:
@@ -851,6 +873,7 @@ def load_saved_product_correction_request(
     spreadsheet_id: str,
     credentials_path: Path,
     lookup_value: str,
+    allowed_municipality_ids: Iterable[str] | None = None,
     client_factory: Callable | None = None,
 ) -> SavedProductCorrectionRequest | None:
     """依頼IDまたはBacklog親課題キーから、再編集用の履歴を取得する。"""
@@ -873,6 +896,16 @@ def load_saved_product_correction_request(
         None,
     )
     if request_row is None:
+        return None
+
+    allowed_ids = (
+        {normalize(value) for value in allowed_municipality_ids}
+        if allowed_municipality_ids is not None else None
+    )
+    if (
+        allowed_ids is not None
+        and normalize(request_row.get("自治体ID")) not in allowed_ids
+    ):
         return None
 
     request_id = normalize(request_row.get("依頼ID"))
@@ -909,4 +942,73 @@ def load_saved_product_correction_request(
         note=normalize(request_row.get("依頼内容・備考")),
         backlog_issue_type=normalize(request_row.get("Backlog課題種別")),
         details=tuple(details),
+    )
+
+
+def build_saved_product_correction_request_summaries(
+    rows: Iterable[dict],
+    allowed_municipality_ids: Iterable[str] | None = None,
+) -> list[SavedProductCorrectionRequestSummary]:
+    """商品修正依頼の行から、権限内の再編集候補を新しい順で返す。"""
+
+    allowed_ids = (
+        {normalize(value) for value in allowed_municipality_ids}
+        if allowed_municipality_ids is not None else None
+    )
+    summaries = []
+    for row in rows:
+        municipality_id = normalize(row.get("自治体ID"))
+        request_id = normalize(row.get("依頼ID"))
+        if not request_id or (allowed_ids is not None and municipality_id not in allowed_ids):
+            continue
+        summaries.append(SavedProductCorrectionRequestSummary(
+            request_id=request_id,
+            requested_at=(
+                normalize(row.get("依頼日時"))
+                or normalize(row.get("受付日時"))
+                or normalize(row.get("登録日時"))
+            ),
+            requester=normalize(row.get("依頼者")),
+            municipality_id=municipality_id,
+            municipality_name=normalize(row.get("自治体名")) or municipality_id,
+            request_kind=(
+                normalize(row.get("依頼種別"))
+                or normalize(row.get("業務種別"))
+                or normalize(row.get("対応単位"))
+            ),
+            backlog_issue_key=normalize(row.get("Backlog親課題キー")),
+            backlog_issue_url=normalize(row.get("Backlog親課題URL")),
+            status=normalize(row.get("状態")) or "受付",
+            updated_at=normalize(row.get("更新日時")),
+        ))
+    return sorted(
+        summaries,
+        key=lambda summary: (
+            summary.requested_at,
+            summary.updated_at,
+            summary.request_id,
+        ),
+        reverse=True,
+    )
+
+
+def load_saved_product_correction_request_summaries(
+    spreadsheet_id: str,
+    credentials_path: Path,
+    allowed_municipality_ids: Iterable[str] | None = None,
+    client_factory: Callable | None = None,
+) -> list[SavedProductCorrectionRequestSummary]:
+    """商品情報マスタから再編集候補の履歴一覧を読み込む。"""
+
+    if not credentials_path.exists():
+        raise FileNotFoundError(
+            f"サービスアカウントJSONがありません: {credentials_path}"
+        )
+    factory = client_factory or gspread.service_account
+    client = factory(filename=str(credentials_path))
+    spreadsheet = client.open_by_key(spreadsheet_id)
+    rows = spreadsheet.worksheet(REQUEST_SHEET_NAME).get_all_records()
+    return build_saved_product_correction_request_summaries(
+        rows,
+        allowed_municipality_ids=allowed_municipality_ids,
     )
