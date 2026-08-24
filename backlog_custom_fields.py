@@ -151,11 +151,12 @@ def build_custom_field_parameters(
 
 def load_backlog_custom_fields(
     spreadsheet_id: str,
-    credentials_path: Path,
+    credentials_path: Path | str,
     client_factory: Callable | None = None,
 ) -> list[BacklogCustomField]:
     """各種マスタのカスタム属性マスタを読み込む。"""
 
+    credentials_path = Path(credentials_path)
     if not credentials_path.exists():
         raise FileNotFoundError(f"サービスアカウントJSONがありません: {credentials_path}")
     factory = client_factory or gspread.service_account
