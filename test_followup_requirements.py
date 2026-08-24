@@ -191,7 +191,7 @@ def test_initial_request_flow_is_limited_to_correction_or_new_registration():
         encoding="utf-8"
     )
     assert 'REQUEST_MODES = ("修正", "新規商品登録")' in source
-    assert '"依頼内容",\n            REQUEST_MODES' in source
+    assert '"依頼内容",\n                REQUEST_MODES' in source
     assert 'request_unit = "商品単位"' in source
     assert 'work_category = "新規商品登録" if request_mode == "新規商品登録" else "一般業務"' in source
     assert '"定期便・SKU展開を利用する（試験運用）"' in source
@@ -254,3 +254,75 @@ def test_failed_backlog_request_retry_does_not_save_duplicate_master_rows():
     ]
     assert "else:" in source[retry_branch:normal_save]
     assert "st.session_state.editing_source_request_id = result.request_id" in source
+
+
+def test_backlog_due_date_defaults_follow_request_type_and_business_days():
+    from datetime import date
+
+    from request_form import _default_backlog_due_date
+
+    assert _default_backlog_due_date(
+        request_date=date(2026, 8, 24),
+        is_new_product=False,
+        correction_type="在庫数変更",
+    ) == date(2026, 8, 24)
+    assert _default_backlog_due_date(
+        request_date=date(2026, 8, 28),
+        is_new_product=False,
+        correction_type="複合的な修正",
+    ) == date(2026, 8, 31)
+    assert _default_backlog_due_date(
+        request_date=date(2026, 8, 28),
+        is_new_product=True,
+        correction_type="",
+    ) == date(2026, 9, 2)
+    # 11/23（勤労感謝の日）に当たるため翌営業日へ送る。
+    assert _default_backlog_due_date(
+        request_date=date(2026, 11, 20),
+        is_new_product=False,
+        correction_type="複合的な修正",
+    ) == date(2026, 11, 24)
+
+
+def test_logged_in_user_is_limited_to_authorized_municipalities():
+    from backlog_users import BacklogProjectUser
+    from request_form import _allowed_municipality_ids
+
+    users = [
+        BacklogProjectUser(
+            municipality_id="kaga",
+            municipality_name="加賀市",
+            project_id="1",
+            user_id="10",
+            name="担当A",
+            mail_address="user@example.com",
+            login_address="user@example.com",
+        ),
+        BacklogProjectUser(
+            municipality_id="ebetsu",
+            municipality_name="江別市",
+            project_id="2",
+            user_id="11",
+            name="担当A",
+            mail_address="user@example.com",
+            login_address="USER@example.com",
+        ),
+        BacklogProjectUser(
+            municipality_id="kuma",
+            municipality_name="球磨村",
+            project_id="3",
+            user_id="12",
+            name="担当B",
+            mail_address="other@example.com",
+            login_address="other@example.com",
+        ),
+    ]
+
+    assert _allowed_municipality_ids(users, "User@Example.com") == {"kaga", "ebetsu"}
+
+
+def test_urgent_request_prefixes_backlog_issue_title():
+    source = Path(__file__).with_name("request_form.py").read_text(encoding="utf-8")
+
+    assert 'st.checkbox(\n                "至急"' in source
+    assert 'issue_summary = f"【至急】{issue_summary}"' in source
