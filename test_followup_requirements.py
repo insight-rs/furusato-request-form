@@ -253,3 +253,4 @@ def test_failed_backlog_request_retry_does_not_save_duplicate_master_rows():
         retry_branch:normal_save
     ]
     assert "else:" in source[retry_branch:normal_save]
+    assert "st.session_state.editing_source_request_id = result.request_id" in source
