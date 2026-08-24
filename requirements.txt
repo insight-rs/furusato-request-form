@@ -1,6 +1,7 @@
 streamlit[auth]==1.60.0
 gspread==6.2.1
 google-auth==2.56.2
+jpholiday==1.0.3
 openpyxl==3.1.5
 pandas==3.0.5
 requests==2.34.2
