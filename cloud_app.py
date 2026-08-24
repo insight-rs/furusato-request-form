@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from auth_gate import render_user_menu, require_authenticated_user
@@ -23,6 +25,24 @@ render_user_menu(current_user)
 
 st.title("ふるさと納税業務支援")
 st.caption("商品登録・修正依頼と運用状況を、共有マスタで一元管理します。")
+
+manual_path = Path(__file__).parent / "assets" / "ふるさと納税フォーム_操作マニュアル.pptx"
+if manual_path.exists():
+    with st.container(border=True):
+        manual_column, download_column = st.columns([3, 2], vertical_alignment="center")
+        manual_column.markdown(
+            "**はじめに：操作マニュアル（最新版）**  \n"
+            "入力方法、Backlog連携、管理スプレッドシートの運用を画面図解付きで確認できます。"
+        )
+        download_column.download_button(
+            "📘 最新版マニュアルをダウンロード",
+            data=manual_path.read_bytes(),
+            file_name="ふるさと納税業務支援_運用マニュアル_最新版.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            width="stretch",
+            type="primary",
+        )
+
 current_view = st.segmented_control(
     "画面", ["商品登録・修正依頼", "運用サマリ"],
     default="商品登録・修正依頼", required=True, key="cloud_app_view", width="stretch",
@@ -59,3 +79,4 @@ else:
     except Exception as error:
         st.error("運用サマリを読み込めませんでした。")
         st.exception(error)
+
