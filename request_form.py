@@ -3172,6 +3172,10 @@ def render_product_request_tab(
                         access_token=backlog_access_token,
                     )
             except Exception as error:
+                # マスタ保存後にBacklogだけ失敗した場合は、次回の保存を
+                # 同じ依頼IDのBacklog再送として扱い、マスタへ重複追加しない。
+                st.session_state.editing_source_request_id = result.request_id
+                st.session_state.editing_source_backlog_issue_key = ""
                 st.warning(
                     f"依頼ID：{result.request_id} は商品情報マスタへ保存しましたが、"
                     "Backlogへの起票に失敗しました。"
