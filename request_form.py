@@ -1540,8 +1540,11 @@ def render_product_request_tab(
             )
             return
 
-    with st.container(border=True):
-        st.subheader("登録済み依頼を再編集")
+    with st.expander(
+        "登録済み依頼を再編集",
+        expanded=False,
+        icon=":material/history:",
+    ):
         st.caption(
             "過去の依頼を修正するには、下の履歴一覧から1件を選ぶか、"
             "Backlog課題キーまたは依頼IDを入力して履歴を読み込みます。"
@@ -1686,7 +1689,8 @@ def render_product_request_tab(
         ) and selected_summary is not None:
             lookup_to_load = selected_summary.lookup_value
 
-        with st.expander("Backlog課題キー・依頼IDを直接入力する場合"):
+        with st.container(border=True):
+            st.markdown("**Backlog課題キー・依頼IDを直接入力する場合**")
             st.markdown(
                 "入力できる番号は次の2種類です。\n\n"
                 "- **Backlog課題キー**：Backlog課題画面に表示される `PROJECT-123` 形式の番号\n"
