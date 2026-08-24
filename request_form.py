@@ -51,6 +51,7 @@ from product_request_status_sync import sync_product_request_statuses
 from product_requests import (
     ProductCorrectionLine,
     ProductReference,
+    ProductRequestSaveResult,
     build_backlog_issue_content,
     build_image_backlog_issue_content,
     create_product_correction_request,
@@ -1432,10 +1433,17 @@ def render_product_request_tab(
                             "商品マスタに見つからず読み込めなかった商品があります："
                             + "、".join(dict.fromkeys(missing_products))
                         )
-                    st.success(
-                        f"依頼ID：{saved_request.request_id} を読み込みました。"
-                        "内容を修正して保存すると、同じBacklog親課題を更新します。"
-                    )
+                    if saved_request.backlog_issue_key:
+                        st.success(
+                            f"依頼ID：{saved_request.request_id} を読み込みました。"
+                            "内容を修正して保存すると、同じBacklog親課題を更新します。"
+                        )
+                    else:
+                        st.success(
+                            f"依頼ID：{saved_request.request_id} を読み込みました。"
+                            "この依頼はBacklog未起票のため、保存済みの依頼IDを使って"
+                            "Backlog起票だけを再送します。商品情報マスタへは重複追加しません。"
+                        )
                     st.rerun()
             except Exception as error:
                 st.error("登録済み依頼を読み込めませんでした。")
@@ -3046,6 +3054,9 @@ def render_product_request_tab(
             editing_source_backlog_issue_key = str(
                 st.session_state.get("editing_source_backlog_issue_key", "")
             ).strip()
+            retrying_failed_backlog = bool(
+                editing_source_request_id and not editing_source_backlog_issue_key
+            )
             stored_note = request_note
             if box_url.strip():
                 stored_note = "\n\n".join(
@@ -3064,7 +3075,7 @@ def render_product_request_tab(
                 stored_note = "\n\n".join(
                     value for value in (stored_note.strip(), backlog_only_note) if value
                 )
-            if editing_source_request_id:
+            if editing_source_request_id and not retrying_failed_backlog:
                 revision_marker = f"改訂元依頼ID：{editing_source_request_id}"
                 stored_note = "\n".join(
                     value for value in (revision_marker, stored_note.strip()) if value
@@ -3084,12 +3095,34 @@ def render_product_request_tab(
                 policy_detail=selected_policy.detail if selected_policy else "",
                 backlog_issue_type=selected_issue_type.name if selected_issue_type else "",
             )
-            result = save_product_correction_request(
-                spreadsheet_id=product_spreadsheet_id,
-                credentials_path=credentials_path,
-                request=request,
-                lines=correction_lines,
-            )
+            if retrying_failed_backlog:
+                request = replace(request, request_id=editing_source_request_id)
+                detail_ids = tuple(
+                    f"{request.request_id}-D{index:03d}"
+                    for index, _ in enumerate(correction_lines, start=1)
+                )
+                image_request_ids = tuple(
+                    f"{request.request_id}-I{index:03d}"
+                    for index, line in enumerate(
+                        (
+                            line for line in correction_lines
+                            if line.image_instruction.strip()
+                        ),
+                        start=1,
+                    )
+                )
+                result = ProductRequestSaveResult(
+                    request_id=request.request_id,
+                    detail_ids=detail_ids,
+                    image_request_ids=image_request_ids,
+                )
+            else:
+                result = save_product_correction_request(
+                    spreadsheet_id=product_spreadsheet_id,
+                    credentials_path=credentials_path,
+                    request=request,
+                    lines=correction_lines,
+                )
             comparison_path = None
             master_correction_lines = [
                 line for line in correction_lines
