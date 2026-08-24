@@ -1,6 +1,10 @@
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 
+import pytest
+
+from backlog_custom_fields import load_backlog_custom_fields
 from backlog_config import build_backlog_configs
 from product_requests import (
     ProductCorrectionLine,
@@ -200,3 +204,10 @@ def test_new_product_shapes_initialize_correction_only_state():
     assert "selected_change_options: list[RequestFormField | str] = []" in source[
         initialization:new_product_branch
     ]
+
+
+def test_custom_field_loader_accepts_string_credential_path():
+    missing_credentials = str(Path(__file__).with_name("missing-service-account.json"))
+
+    with pytest.raises(FileNotFoundError):
+        load_backlog_custom_fields("spreadsheet-id", missing_credentials)
