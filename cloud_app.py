@@ -15,6 +15,18 @@ from runtime_config import CONFIG_SPREADSHEET_ID, PRODUCT_SPREADSHEET_ID, google
 
 credentials_path = google_credentials_path()
 st.set_page_config(page_title="ふるさと納税業務支援", page_icon="📋", layout="centered")
+st.markdown(
+    """
+    <style>
+    /* 再実行中も入力画面を薄くしすぎず、エラー表示のように見せない。 */
+    .stApp [data-stale="true"] {
+        opacity: 0.92 !important;
+        transition: opacity 80ms ease-in !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 current_user = require_authenticated_user()
 handle_backlog_oauth_callback(
     login_email=current_user.email,

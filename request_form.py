@@ -285,7 +285,7 @@ def _own_requester_keys(users, login_email: str) -> set[tuple[str, str]]:
     }
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
     return load_product_references(
         spreadsheet_id=product_spreadsheet_id,
@@ -293,7 +293,7 @@ def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_form_fields(config_spreadsheet_id: str, credentials_path_text: str):
     return load_request_form_fields(
         spreadsheet_id=config_spreadsheet_id,
@@ -301,7 +301,7 @@ def _load_form_fields(config_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_policies(config_spreadsheet_id: str, credentials_path_text: str):
     return load_policy_entries(
         spreadsheet_id=config_spreadsheet_id,
@@ -309,7 +309,7 @@ def _load_policies(config_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_backlog_configs(config_spreadsheet_id: str, credentials_path_text: str):
     return load_backlog_configs(
         spreadsheet_id=config_spreadsheet_id,
@@ -317,7 +317,7 @@ def _load_backlog_configs(config_spreadsheet_id: str, credentials_path_text: str
     )
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_backlog_issue_types(config_spreadsheet_id: str, credentials_path_text: str):
     return load_backlog_issue_types(
         spreadsheet_id=config_spreadsheet_id,
@@ -325,7 +325,7 @@ def _load_backlog_issue_types(config_spreadsheet_id: str, credentials_path_text:
     )
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
     return load_backlog_project_users(
         spreadsheet_id=config_spreadsheet_id,
@@ -333,7 +333,7 @@ def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_data(ttl=60, max_entries=4, show_spinner=False)
+@st.cache_data(max_entries=4, show_spinner=False)
 def _load_saved_request_summaries(
     product_spreadsheet_id: str,
     credentials_path_text: str,
@@ -346,12 +346,12 @@ def _load_saved_request_summaries(
     )
 
 
-@st.cache_data(ttl=600, max_entries=20)
+@st.cache_data(max_entries=20, show_spinner=False)
 def _load_backlog_teams(config):
     return fetch_backlog_project_teams(config)
 
 
-@st.cache_data(ttl=600, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_backlog_custom_fields(config_spreadsheet_id: str, credentials_path_text: str):
     return load_backlog_custom_fields(
         spreadsheet_id=config_spreadsheet_id,
@@ -359,7 +359,7 @@ def _load_backlog_custom_fields(config_spreadsheet_id: str, credentials_path_tex
     )
 
 
-@st.cache_data(ttl=90, max_entries=2)
+@st.cache_data(max_entries=2, show_spinner=False)
 def _load_backlog_status_values(config_spreadsheet_id: str, credentials_path_text: str):
     return load_backlog_statuses(
         spreadsheet_id=config_spreadsheet_id,
@@ -803,12 +803,24 @@ def _render_product_change_editor(
                 elif field.input_kind == "選択" and field.options():
                     label_by_code = {code: label for label, code in field.options()}
                     st.session_state.setdefault(field_key, label_by_code.get(initial_value, initial_value))
-                    after_by_field[field.field_id] = st.selectbox(
+                    selected_label = st.selectbox(
                         _required_label(field.label),
                         options=[""] + [label for label, _ in field.options()],
                         key=field_key,
+                        help=(
+                            "チョイスの固定値から選択します。自由記述にする場合は"
+                            "「任意入力」を選ぶと、下に発送期日入力欄が表示されます。"
+                            if field.source_column == SHIPPING_DEADLINE_TYPE_COLUMN
+                            else None
+                        ),
                         persist_state="session",
                     )
+                    after_by_field[field.field_id] = selected_label
+                    if field.source_column == SHIPPING_DEADLINE_TYPE_COLUMN and selected_label:
+                        if selected_label == "任意入力":
+                            st.caption("下の「発送期日」に自由記述で入力してください。")
+                        else:
+                            st.caption("選択したチョイス固定値で更新します。発送期日の自由記述は不要です。")
                 elif field.input_kind == "日付":
                     st.session_state.setdefault(field_key, _parse_date_value(initial_value))
                     after_by_field[field.field_id] = st.date_input(
@@ -1523,23 +1535,33 @@ def render_product_request_tab(
         "起票時には変更後データExcelと、必要に応じて追加ファイルをBacklogへ添付します。"
     )
     if st.button(
-        "商品・自治体マスタを再読み込み",
+        "商品・自治体・設定マスタを再読み込み",
         icon=":material/refresh:",
         type="secondary",
-        help="固定PCで取得した最新の商品・自治体情報を読み直します。",
+        help="固定PCで取得した最新の商品情報と、フォーム・Backlog設定を読み直します。",
     ):
-        _load_products.clear()
-        _load_saved_request_summaries.clear()
-        st.success("商品・自治体マスタを再読み込みしました。")
+        for cached_loader in (
+            _load_products,
+            _load_form_fields,
+            _load_policies,
+            _load_backlog_configs,
+            _load_backlog_issue_types,
+            _load_backlog_users,
+            _load_saved_request_summaries,
+            _load_backlog_teams,
+            _load_backlog_custom_fields,
+            _load_backlog_status_values,
+        ):
+            cached_loader.clear()
+        st.success("商品・自治体・設定マスタを再読み込みしました。")
 
     try:
-        with st.spinner("商品・フォーム・施策マスタを読み込んでいます。"):
-            products = _load_products(product_spreadsheet_id, str(credentials_path))
-            form_fields = _load_form_fields(config_spreadsheet_id, str(credentials_path))
-            policies = _load_policies(config_spreadsheet_id, str(credentials_path))
-            all_backlog_users = _load_backlog_users(
-                config_spreadsheet_id, str(credentials_path)
-            )
+        products = _load_products(product_spreadsheet_id, str(credentials_path))
+        form_fields = _load_form_fields(config_spreadsheet_id, str(credentials_path))
+        policies = _load_policies(config_spreadsheet_id, str(credentials_path))
+        all_backlog_users = _load_backlog_users(
+            config_spreadsheet_id, str(credentials_path)
+        )
     except Exception as error:
         st.error("依頼フォーム用のマスタを読み込めませんでした。")
         st.exception(error)
@@ -1838,16 +1860,24 @@ def render_product_request_tab(
         if not oauth_settings.configured:
             st.warning("本人名義でのBacklog起票は管理者のOAuth設定完了後に利用できます。")
         else:
-            try:
-                backlog_oauth_linked = bool(load_refresh_token(
-                    config_spreadsheet_id,
-                    credentials_path,
-                    oauth_settings,
-                    login_email,
-                    target_backlog_config.space_id,
-                ))
-            except Exception:
-                backlog_oauth_linked = False
+            oauth_session_key = (
+                "backlog_oauth_linked|"
+                f"{login_email.strip().lower()}|{target_backlog_config.space_id}"
+            )
+            backlog_oauth_linked = bool(st.session_state.get(oauth_session_key))
+            if not backlog_oauth_linked:
+                try:
+                    backlog_oauth_linked = bool(load_refresh_token(
+                        config_spreadsheet_id,
+                        credentials_path,
+                        oauth_settings,
+                        login_email,
+                        target_backlog_config.space_id,
+                    ))
+                except Exception:
+                    backlog_oauth_linked = False
+                if backlog_oauth_linked:
+                    st.session_state[oauth_session_key] = True
 
             if not backlog_oauth_linked:
                 with st.container(border=True):
@@ -3729,5 +3759,6 @@ def render_backlog_status_sync(
                 st.warning(f"{message} / 取得失敗：{len(sync_result.failed_request_ids)}件")
             else:
                 st.success(message)
+            _load_saved_request_summaries.clear()
         except Exception:
             st.error("Backlog状態を同期できませんでした。")

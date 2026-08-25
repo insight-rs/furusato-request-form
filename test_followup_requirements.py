@@ -451,3 +451,27 @@ def test_existing_product_change_fields_start_from_current_values():
     assert "elif product.product_id:" in editor
     assert 'initial_value = source_values.get(field.source_column, "")' in editor
     assert "if field.source_column == SHIPPING_DEADLINE_COLUMN:" in editor
+
+
+
+def test_shipping_deadline_uses_choice_codes_and_free_text_only_for_custom_mode():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'deadline_value not in {"0", "任意入力"}' in source
+    assert 'if selected_label == "任意入力":' in source
+    assert '選択したチョイス固定値で更新します' in source
+
+
+def test_request_master_cache_does_not_expire_during_form_entry():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    cache_section = source[
+        source.index("def _load_products") - 80:
+        source.index("def _product_label")
+    ]
+    assert "ttl=" not in cache_section
+    assert cache_section.count("show_spinner=False") >= 9
+    assert 'st.session_state[oauth_session_key] = True' in source
+    assert '商品・自治体・設定マスタを再読み込み' in source
