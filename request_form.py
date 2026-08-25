@@ -211,6 +211,7 @@ CORRECTION_TYPE_COLUMNS = {
     "商品説明文・容量変更": {"説明", "容量"},
 }
 BACKLOG_ONLY_PREFIX = "【Backlogのみ】"
+REQUEST_FORM_RUNTIME_VERSION = "2026-08-25.2"
 JST = ZoneInfo("Asia/Tokyo")
 SAME_DAY_CORRECTION_TYPES = {"在庫数変更", "表示・非表示切り替え"}
 

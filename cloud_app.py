@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import streamlit as st
@@ -9,8 +10,15 @@ import streamlit as st
 from auth_gate import render_user_menu, require_authenticated_user
 from backlog_oauth_ui import handle_backlog_oauth_callback
 from operations_dashboard import load_request_dashboard_summary
-from request_form import render_backlog_status_sync, render_product_request_tab
+import request_form as request_form_module
 from runtime_config import CONFIG_SPREADSHEET_ID, PRODUCT_SPREADSHEET_ID, google_credentials_path
+
+
+EXPECTED_REQUEST_FORM_RUNTIME_VERSION = "2026-08-25.2"
+if getattr(request_form_module, "REQUEST_FORM_RUNTIME_VERSION", "") != EXPECTED_REQUEST_FORM_RUNTIME_VERSION:
+    request_form_module = importlib.reload(request_form_module)
+render_backlog_status_sync = request_form_module.render_backlog_status_sync
+render_product_request_tab = request_form_module.render_product_request_tab
 
 
 credentials_path = google_credentials_path()
