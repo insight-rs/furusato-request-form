@@ -431,6 +431,21 @@ def _sort_change_fields(fields: list[RequestFormField]) -> list[RequestFormField
     )
 
 
+def _fields_for_correction_type(
+    form_fields: list[RequestFormField], correction_type: str
+) -> list[RequestFormField]:
+    """専用の修正種別で必要な入力項目を、画面表示設定に左右されず返す。"""
+
+    target_columns = CORRECTION_TYPE_COLUMNS.get(correction_type, set())
+    return _sort_change_fields([
+        field for field in form_fields
+        if field.source_column in target_columns
+        and field.input_kind != "ファイル"
+        and field.source_column not in HIDDEN_FORM_COLUMNS
+        and field.source_column != POINTS_COLUMN
+    ])
+
+
 def _field_visibility(field: RequestFormField, *, is_new_product: bool) -> str:
     if is_new_product:
         return field.new_product_visibility or "対象項目選択肢"
@@ -682,7 +697,15 @@ def _render_product_change_editor(
                     st.markdown(f"##### {section}")
                     previous_section = section
                 field_key = f"{editor_key}_{product_index}_{field.field_id}"
-                initial_value = initial_values.get(field.source_column, "")
+                if field.source_column in initial_values:
+                    initial_value = initial_values[field.source_column]
+                elif product.product_id:
+                    # 既存商品の修正では変更欄に現在値を引き継ぐ。
+                    # 条件付き項目（発送期日・訳アリ詳細など）も、現在の
+                    # 選択値に応じて初回表示から正しい入力欄を展開できる。
+                    initial_value = source_values.get(field.source_column, "")
+                else:
+                    initial_value = ""
                 if field.source_column == LOCAL_PRODUCT_TYPE_COLUMN:
                     standards = load_local_product_standards()
                     labels = [f"{code}｜{description}" for code, description in standards]
@@ -2228,11 +2251,9 @@ def render_product_request_tab(
                     if donation_field is not None:
                         selected_optional_fields.append(donation_field)
             else:
-                target_columns = CORRECTION_TYPE_COLUMNS[correction_type]
-                selected_optional_fields = [
-                    field for field in visible_fields
-                    if field.source_column in target_columns
-                ]
+                selected_optional_fields = _fields_for_correction_type(
+                    form_fields, correction_type
+                )
                 if selected_optional_fields:
                     st.caption(
                         "入力項目：" + "、".join(field.label for field in selected_optional_fields)

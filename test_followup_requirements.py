@@ -421,3 +421,33 @@ def test_saved_request_history_is_collapsed_by_default():
     assert "with st.expander(" in source[history_start - 40:history_start]
     assert "expanded=False" in history_section
     assert 'icon=":material/history:"' in history_section
+
+
+
+def test_dedicated_correction_types_always_resolve_their_input_fields():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    helper = source[
+        source.index("def _fields_for_correction_type"):
+        source.index("def _field_visibility")
+    ]
+    assert "CORRECTION_TYPE_COLUMNS.get(correction_type, set())" in helper
+    assert "field.source_column in target_columns" in helper
+    assert "field.source_column not in HIDDEN_FORM_COLUMNS" in helper
+    assert "_field_visibility" not in helper
+    assert "_fields_for_correction_type(\n                    form_fields, correction_type" in source
+
+
+def test_existing_product_change_fields_start_from_current_values():
+    source = __import__("pathlib").Path(__file__).with_name("request_form.py").read_text(
+        encoding="utf-8"
+    )
+    editor = source[
+        source.index("def _render_product_change_editor"):
+        source.index("def _build_product_change_lines")
+    ]
+    assert "if field.source_column in initial_values:" in editor
+    assert "elif product.product_id:" in editor
+    assert 'initial_value = source_values.get(field.source_column, "")' in editor
+    assert "if field.source_column == SHIPPING_DEADLINE_COLUMN:" in editor
