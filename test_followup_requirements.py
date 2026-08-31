@@ -1,8 +1,10 @@
 from dataclasses import replace
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 from backlog_custom_fields import (
     BacklogCustomField,
@@ -18,6 +20,9 @@ from product_requests import (
     build_saved_product_correction_request_summaries,
     build_backlog_issue_content,
 )
+from registration_excel import build_registration_template, read_registration_template
+from form_definitions import RequestFormField
+from request_form import _format_input_error_message
 
 
 def _request():
@@ -56,6 +61,77 @@ def test_backlog_uses_per_product_table_and_hides_automatic_fields():
     assert "画像修正指示：\n" not in description
     assert "| 品番 | CODE-1 | CODE-1 |" in description
     assert "| 商品名 | 商品 | 商品 |" in description
+
+
+def test_new_product_backlog_uses_compact_table_and_aggregates_choices():
+    product = ProductReference(
+        municipality_id="m1", municipality_name="自治体", product_id="",
+        original_product_id="", product_name="新商品 NEW-1",
+        business_id="", business_name="既存事業者",
+        source_row=(("管理コード", ""), ("（必須）お礼の品名", "")),
+    )
+    request = replace(_request(), request_unit="新規商品登録", work_category="新規商品登録")
+    lines = [
+        ProductCorrectionLine(product, "管理コード", "", "NEW-1", display_name="品番"),
+        ProductCorrectionLine(product, "（必須）お礼の品名", "", "新商品 NEW-1", display_name="商品名"),
+        ProductCorrectionLine(product, "サイト表示事業者名", "", "既存事業者", display_name="事業者名"),
+        ProductCorrectionLine(product, "説明", "", "商品の説明", display_name="商品説明文"),
+        ProductCorrectionLine(product, "（必須）冷蔵配送", "", "1", display_name="冷蔵配送"),
+        ProductCorrectionLine(product, "アレルギー：卵", "", "1", display_name="アレルギー：卵"),
+        ProductCorrectionLine(product, "【Backlogのみ】税率", "", "8%", display_name="税率"),
+        ProductCorrectionLine(product, "【Backlogのみ】在庫数", "", "20", display_name="在庫数"),
+    ]
+
+    _, description = build_backlog_issue_content(request, lines)
+
+    assert "| 変更項目 | 現在値 | 更新後 |" in description
+    assert "| 品番 | （未設定） | NEW-1 |" in description
+    assert "| 商品名 | （未設定） | 新商品 NEW-1 |" in description
+    assert "| 事業者名 | （未設定） | 既存事業者 |" in description
+    assert "| 温度帯 | （未設定） | 冷蔵 |" in description
+    assert "| アレルギー品目 | （未設定） | 卵 |" in description
+    assert "| 在庫数 | （未設定） | 20 |" in description
+    assert "税率" not in description
+
+
+def test_registration_template_only_contains_required_product_management_extras():
+    fields = [
+        RequestFormField(
+            field_id="F1", visibility="対象項目選択肢", requirement="必須",
+            label="商品名", source_column="（必須）お礼の品名", input_kind="テキスト",
+        ),
+        RequestFormField(
+            field_id="F2", visibility="対象項目選択肢", requirement="必須",
+            label="事業者名", source_column="サイト表示事業者名", input_kind="テキスト",
+        ),
+    ]
+    content = build_registration_template(
+        fields,
+        "単品",
+        choice_values={
+            "（必須）お礼の品名": "テスト商品",
+            "サイト表示事業者名": "既存事業者",
+        },
+        extra_values={"商品代（税込）": "1000", "在庫数": "20", "税率": "8%"},
+    )
+    imported = read_registration_template(content, fields)
+    workbook = load_workbook(BytesIO(content), data_only=False)
+
+    assert imported.extra_values == {"商品代（税込）": "1000", "在庫数": "20"}
+    assert workbook["新規返礼品申込フォーム"]["H6"].value == "既存事業者"
+    assert "商品管理情報" in workbook.sheetnames
+    assert "共通追加情報" not in workbook.sheetnames
+
+
+def test_detail_validation_errors_are_grouped_with_line_breaks():
+    message = _format_input_error_message([
+        "商品A | 事業者A: 商品名、発送期日",
+        "商品A | 事業者A: 商品代（税込）",
+        "商品B | 事業者B: 在庫数",
+    ])
+
+    assert "**商品A | 事業者A**\n- 商品名\n- 発送期日\n- 商品代（税込）" in message
+    assert "**商品B | 事業者B**\n- 在庫数" in message
 
 
 def test_backlog_config_accepts_product_code_routing_columns():

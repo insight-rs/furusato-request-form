@@ -66,7 +66,6 @@ from product_requests import (
 )
 from revision_export import generate_revision_comparison_workbook
 from registration_excel import (
-    NOULESS_REFERENCE_FIELDS,
     PRODUCT_SHAPES,
     build_registration_template,
     read_registration_template,
@@ -793,9 +792,13 @@ def _render_product_change_editor(
                     after_by_field[field.field_id] = " | ".join(selected_ids)
                 elif field.fixed_value:
                     after_by_field[field.field_id] = field.fixed_value
+                    # 既存事業者を選び直した場合も、前回レンダーのwidget値を
+                    # 残さず、基本情報の事業者名を即座に同期する。
+                    st.session_state[field_key] = _display_field_value(
+                        field, field.fixed_value
+                    )
                     st.text_input(
                         _required_label(field.label),
-                        value=_display_field_value(field, field.fixed_value),
                         disabled=True,
                         key=field_key,
                         help="フォーム項目マスタで設定された固定値です。",
@@ -926,8 +929,10 @@ def _build_product_change_lines(
             if local_code.startswith(("2", "3", "6")) and not local_reason.strip():
                 missing_labels.append("地場産品に該当する理由")
         if missing_labels:
-            product_label = product.source_values().get("管理コード", "") or product.product_name
-            errors.append(f"{product_label}: " + "、".join(dict.fromkeys(missing_labels)))
+            errors.append(
+                f"{_product_label(product)}: "
+                + "、".join(dict.fromkeys(missing_labels))
+            )
             continue
 
         product_lines = []
@@ -1413,6 +1418,39 @@ def _save_uploaded_attachments(request_id: str, uploaded_files: list) -> list[Pa
         path.write_bytes(uploaded_file.getvalue())
         paths.append(path)
     return paths
+
+
+def _save_generated_registration_excel(
+    request_id: str, product_shape: str, content: bytes
+) -> Path:
+    """入力済み新規商品登録Excelを、Backlog添付用に一時保存する。"""
+
+    destination = UPLOAD_DIRECTORY / request_id
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / _safe_attachment_name(
+        f"新規商品登録_{product_shape}_{request_id}.xlsx"
+    )
+    path.write_bytes(content)
+    return path
+
+
+def _format_input_error_message(errors: list[str]) -> str:
+    """明細追加時の入力漏れを、商品・区分ごとの箇条書きに整える。"""
+
+    grouped: dict[str, list[str]] = {}
+    for raw_error in dict.fromkeys(str(error).strip() for error in errors if str(error).strip()):
+        context, separator, fields_text = raw_error.partition(": ")
+        if not separator:
+            grouped.setdefault("入力内容", []).append(context)
+            continue
+        fields = [field.strip() for field in fields_text.split("、") if field.strip()]
+        grouped.setdefault(context, []).extend(fields or [fields_text])
+
+    lines = ["**明細を追加できません。以下の必須項目を確認してください。**"]
+    for context, fields in grouped.items():
+        lines.extend(["", f"**{context}**"])
+        lines.extend(f"- {field}" for field in dict.fromkeys(fields))
+    return "\n".join(lines)
 
 
 def _render_backlog_custom_field(custom_field, field_key: str):
@@ -1962,9 +2000,13 @@ def render_product_request_tab(
                             st.error(f"Excelを取り込めませんでした：{error}")
                             imported_registration = None
                     if imported_registration is not None:
+                        imported_management_count = sum(
+                            1 for label in ("在庫数", "商品代（税込）")
+                            if imported_registration.extra_values.get(label)
+                        )
                         st.success(
                             f"Excelからチョイス項目 {len(imported_registration.choice_values)}件、"
-                            f"追加情報 {len(imported_registration.extra_values)}件を読み込みました。"
+                            f"商品管理情報 {imported_management_count}件を読み込みました。"
                         )
                         if imported_registration.product_shape != product_shape:
                             st.warning(
@@ -2360,7 +2402,6 @@ def render_product_request_tab(
                     )
                 stock_quantity = ""
                 product_cost = ""
-                new_product_extra_editor = None
                 subscription_detail_editor = None
                 sku_detail_editor = None
                 sku_composition = ""
@@ -2501,27 +2542,6 @@ def render_product_request_tab(
                                 key=f"shipping_period_to_{editor_context}",
                                 persist_state="session",
                             )
-                    st.subheader("共通追加情報")
-                    st.caption(
-                        "Nouless要件を参考にした補助情報です。チョイス商品マスタには書き込まず、Backlogと出力Excelへ保存します。"
-                    )
-                    extra_rows = [
-                        {
-                            "項目": label,
-                            "必須区分": requirement,
-                            "入力値": imported_extras.get(label, ""),
-                            "選択肢": options.replace("|", " / "),
-                        }
-                        for label, requirement, options in NOULESS_REFERENCE_FIELDS
-                        if label not in {"商品代（税込）", "在庫数"}
-                    ]
-                    new_product_extra_editor = st.data_editor(
-                        pd.DataFrame(extra_rows),
-                        hide_index=True,
-                        disabled=["項目", "必須区分", "選択肢"],
-                        num_rows="fixed",
-                        key=f"new_product_extra_{editor_context}",
-                    )
                     if product_shape == "定期便":
                         st.subheader("定期便のお届け内容")
                         subscription_rows = (
@@ -2693,13 +2713,20 @@ def render_product_request_tab(
                                 display_name="商品代",
                             ))
                 if is_new_product:
-                    if stock_quantity != "無制限" and not _is_nonnegative_integer(stock_quantity):
-                        input_errors.append("新規商品: 在庫数")
-                    if not _is_nonnegative_integer(product_cost):
-                        input_errors.append("新規商品: 商品代（税込）")
                     registration_product = (
                         new_lines[0].product if new_lines else selected_products[0]
                     )
+                    registration_product_label = (
+                        registration_product.product_name
+                        if registration_product.product_name not in {"", "新規商品"}
+                        else "新規商品（商品名未入力）"
+                    )
+                    if stock_quantity != "無制限" and not _is_nonnegative_integer(stock_quantity):
+                        input_errors.append(f"{registration_product_label}: 在庫数")
+                    if not _is_nonnegative_integer(product_cost):
+                        input_errors.append(
+                            f"{registration_product_label}: 商品代（税込）"
+                        )
                     if new_product_code_method == "品番取得を依頼する":
                         new_lines.append(ProductCorrectionLine(
                             product=registration_product,
@@ -2710,9 +2737,13 @@ def render_product_request_tab(
                         ))
                     if shipping_period_mode == "時期指定あり":
                         if not shipping_period_from or not shipping_period_to:
-                            input_errors.append("新規商品: 発送可能期間FROM・TO")
+                            input_errors.append(
+                                f"{registration_product_label}: 発送可能期間FROM・TO"
+                            )
                         elif shipping_period_from > shipping_period_to:
-                            input_errors.append("新規商品: 発送可能期間の前後関係")
+                            input_errors.append(
+                                f"{registration_product_label}: 発送可能期間の前後関係"
+                            )
                         shipping_period_value = (
                             f"{shipping_period_from.isoformat()}～{shipping_period_to.isoformat()}"
                             if shipping_period_from and shipping_period_to else ""
@@ -2734,21 +2765,6 @@ def render_product_request_tab(
                         after_value=product_shape,
                         display_name="商品形態（Backlogのみ）",
                     ))
-                    extra_value_map = {}
-                    if new_product_extra_editor is not None:
-                        extra_value_map = {
-                            _table_text(row["項目"]): _table_text(row["入力値"])
-                            for _, row in new_product_extra_editor.iterrows()
-                            if _table_text(row["入力値"])
-                        }
-                    for label, value in extra_value_map.items():
-                        new_lines.append(ProductCorrectionLine(
-                            product=registration_product,
-                            field_name=f"{BACKLOG_ONLY_PREFIX}{label}",
-                            before_value="",
-                            after_value=value,
-                            display_name=f"{label}（Backlogのみ）",
-                        ))
                     subscription_rows_for_save = []
                     sku_rows_for_save = []
                     if product_shape == "定期便" and subscription_detail_editor is not None:
@@ -2996,7 +3012,7 @@ def render_product_request_tab(
                         ))
                 if input_errors:
                     st.session_state.pop("auto_save_ready", None)
-                    st.error("必須項目を入力してください: " + " / ".join(input_errors))
+                    st.error(_format_input_error_message(input_errors))
                 elif correction_lines and any(
                     line.product.municipality_id != target_municipality_id
                     for line in correction_lines
@@ -3014,7 +3030,6 @@ def render_product_request_tab(
                         }
                         st.session_state.new_product_excel_values = {
                             "商品形態": product_shape,
-                            "追加情報": extra_value_map,
                             "定期便明細": subscription_rows_for_save,
                             "SKU明細": sku_rows_for_save,
                         }
@@ -3050,8 +3065,7 @@ def render_product_request_tab(
                 if not line.field_name.startswith(BACKLOG_ONLY_PREFIX)
             }
             excel_values = st.session_state.get("new_product_excel_values", {})
-            export_extras = dict(excel_values.get("追加情報", {}))
-            export_extras.update(st.session_state.get("new_product_backlog_values", {}))
+            export_extras = dict(st.session_state.get("new_product_backlog_values", {}))
             st.download_button(
                 "入力済みExcelをダウンロード",
                 data=build_registration_template(
@@ -3536,20 +3550,58 @@ def render_product_request_tab(
                 )
                 _load_saved_request_summaries.clear()
             comparison_path = None
-            master_correction_lines = [
-                line for line in correction_lines
-                if not line.field_name.startswith(BACKLOG_ONLY_PREFIX)
-            ]
-            if master_correction_lines:
+            generated_excel_label = (
+                "入力済み新規商品登録Excel"
+                if is_new_product else "変更後データExcel"
+            )
+            if is_new_product:
                 try:
-                    comparison_path = generate_revision_comparison_workbook(
-                        request, master_correction_lines
+                    choice_export_values = {
+                        line.field_name: line.after_value
+                        for line in correction_lines
+                        if not line.field_name.startswith(BACKLOG_ONLY_PREFIX)
+                    }
+                    excel_values = st.session_state.get("new_product_excel_values", {})
+                    export_extras = dict(
+                        st.session_state.get("new_product_backlog_values", {})
+                    )
+                    registration_excel = build_registration_template(
+                        form_fields,
+                        excel_values.get("商品形態", product_shape),
+                        choice_values=choice_export_values,
+                        extra_values=export_extras,
+                        subscription_rows=excel_values.get("定期便明細", []),
+                        sku_rows=excel_values.get("SKU明細", []),
+                    )
+                    comparison_path = _save_generated_registration_excel(
+                        result.request_id,
+                        excel_values.get("商品形態", product_shape),
+                        registration_excel,
                     )
                     st.session_state.latest_comparison_path = str(comparison_path)
+                    st.session_state.latest_excel_label = generated_excel_label
                 except Exception:
                     st.warning(
-                        f"依頼ID：{result.request_id} は保存しましたが、変更後データExcelを生成できませんでした。"
+                        f"依頼ID：{result.request_id} は保存しましたが、"
+                        f"{generated_excel_label}を生成できませんでした。"
                     )
+            else:
+                master_correction_lines = [
+                    line for line in correction_lines
+                    if not line.field_name.startswith(BACKLOG_ONLY_PREFIX)
+                ]
+                if master_correction_lines:
+                    try:
+                        comparison_path = generate_revision_comparison_workbook(
+                            request, master_correction_lines
+                        )
+                        st.session_state.latest_comparison_path = str(comparison_path)
+                        st.session_state.latest_excel_label = generated_excel_label
+                    except Exception:
+                        st.warning(
+                            f"依頼ID：{result.request_id} は保存しましたが、"
+                            f"{generated_excel_label}を生成できませんでした。"
+                        )
             try:
                 generated_summary, description = build_backlog_issue_content(
                     request, correction_lines
@@ -3624,7 +3676,8 @@ def render_product_request_tab(
                     comparison_attached = True
                 except Exception:
                     st.warning(
-                        f"Backlog課題 {issue.issue_key} は起票済みですが、変更後データExcelの添付に失敗しました。"
+                        f"Backlog課題 {issue.issue_key} は起票済みですが、"
+                        f"{generated_excel_label}の添付に失敗しました。"
                     )
             uploaded_attachment_count = 0
             if uploaded_files:
@@ -3646,7 +3699,7 @@ def render_product_request_tab(
             image_lines = [line for line in correction_lines if line.image_instruction.strip()]
             attachment_messages = []
             if comparison_attached:
-                attachment_messages.append("変更後データExcelを添付しました。")
+                attachment_messages.append(f"{generated_excel_label}を添付しました。")
             if uploaded_attachment_count:
                 attachment_messages.append(f"追加添付ファイル {uploaded_attachment_count}件を添付しました。")
             attachment_message = " ".join(attachment_messages)
@@ -3698,6 +3751,10 @@ def render_product_request_tab(
                         f"依頼を保存し、Backlog親課題 {issue.issue_key} と"
                         f"画像子課題 1件を起票しました。{attachment_message}"
                     )
+            st.session_state.latest_backlog_issue = {
+                "issue_key": issue.issue_key,
+                "issue_url": issue.issue_url,
+            }
             # 親課題の起票と依頼IDへの記録が完了した後だけ入力内容をクリアする。
             st.session_state.correction_lines = []
             st.session_state.pop("new_product_backlog_values", None)
@@ -3711,13 +3768,21 @@ def render_product_request_tab(
             st.error("商品修正依頼を保存できませんでした。")
             st.exception(error)
 
+    latest_backlog_issue = st.session_state.get("latest_backlog_issue", {})
+    if latest_backlog_issue.get("issue_url"):
+        st.link_button(
+            f"Backlog課題 {latest_backlog_issue.get('issue_key', '')} を開く",
+            latest_backlog_issue["issue_url"],
+            icon=":material/open_in_new:",
+        )
+
     latest_comparison_path_value = st.session_state.get("latest_comparison_path")
     latest_comparison_path = (
         Path(latest_comparison_path_value) if latest_comparison_path_value else None
     )
     if latest_comparison_path and latest_comparison_path.is_file():
         st.download_button(
-            "最新の変更後データExcelをダウンロード",
+            f"最新の{st.session_state.get('latest_excel_label', '変更後データExcel')}をダウンロード",
             data=latest_comparison_path.read_bytes(),
             file_name=latest_comparison_path.name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

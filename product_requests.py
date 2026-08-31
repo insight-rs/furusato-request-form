@@ -396,6 +396,97 @@ def validate_correction_lines(
     return validated
 
 
+NEW_PRODUCT_BACKLOG_COLUMNS = {
+    "管理コード",
+    "（必須）お礼の品名",
+    "サイト表示事業者名",
+    "（条件付き必須）必要寄付金額",
+    "（条件付き必須）寄附額",
+    "寄附額",
+    "容量",
+    "キャッチコピー",
+    "説明",
+    "（必須）発送期日種別",
+    "発送期日",
+    "申込期日",
+    "（必須）配送業者",
+    "配送不可地域",
+    "地場産品類型",
+    "Backlogのみ：商品代（税込）",
+    "Backlogのみ：在庫数",
+    "Backlogのみ：発送可能時期",
+    "Backlogのみ：商品形態",
+    "Backlogのみ：品番取得依頼",
+}
+
+
+def _compact_new_product_backlog_lines(
+    lines: list[ProductCorrectionLine],
+) -> list[ProductCorrectionLine]:
+    """新規登録本文を主要項目に絞り、温度帯・アレルギーを集約する。"""
+
+    compact: list[ProductCorrectionLine] = []
+    grouped: dict[tuple[str, str], list[ProductCorrectionLine]] = {}
+    for line in lines:
+        key = (line.product.municipality_id, line.product.product_id)
+        grouped.setdefault(key, []).append(line)
+
+    for product_lines in grouped.values():
+        product = product_lines[0].product
+        for line in product_lines:
+            field = normalize(line.field_name)
+            label = normalize(line.display_name)
+            if field.startswith("アレルギー：") or field in {
+                "（必須）常温配送", "（必須）冷蔵配送", "（必須）冷凍配送"
+            }:
+                continue
+            if (
+                field in NEW_PRODUCT_BACKLOG_COLUMNS
+                or _backlog_line_priority(line)[0] <= 4
+                or label.startswith(("SKU ", "定期便 第"))
+            ):
+                compact.append(line)
+
+        temperature_labels = [
+            label for label, column in (
+                ("常温", "（必須）常温配送"),
+                ("冷蔵", "（必須）冷蔵配送"),
+                ("冷凍", "（必須）冷凍配送"),
+            )
+            if any(
+                normalize(line.field_name) == column
+                and normalize(line.after_value) == "1"
+                for line in product_lines
+            )
+        ]
+        if temperature_labels:
+            compact.append(ProductCorrectionLine(
+                product=product,
+                field_name="Backlogのみ：温度帯",
+                before_value="",
+                after_value="・".join(temperature_labels),
+                display_name="温度帯",
+            ))
+
+        allergy_labels = []
+        for line in product_lines:
+            field = normalize(line.field_name)
+            if field.startswith("アレルギー：") and normalize(line.after_value) == "1":
+                allergy_labels.append(
+                    normalize(line.display_name).removeprefix("アレルギー：")
+                    or field.removeprefix("アレルギー：")
+                )
+        if allergy_labels:
+            compact.append(ProductCorrectionLine(
+                product=product,
+                field_name="Backlogのみ：アレルギー品目",
+                before_value="",
+                after_value="、".join(dict.fromkeys(allergy_labels)),
+                display_name="アレルギー品目",
+            ))
+    return compact
+
+
 def build_backlog_issue_content(
     request: ProductCorrectionRequest,
     lines: Iterable[ProductCorrectionLine],
@@ -420,6 +511,8 @@ def build_backlog_issue_content(
         if line.field_name not in backlog_hidden_columns
         and normalize(line.instruction) != "【自動設定】"
     ]
+    if request.request_unit == "新規商品登録":
+        display_lines = _compact_new_product_backlog_lines(display_lines)
     if request.work_category == "施策":
         summary_label = "施策"
     elif request.request_unit == "新規商品登録":
@@ -566,7 +659,7 @@ def build_backlog_issue_content(
                 )
                 priority = _backlog_line_priority(line)[0]
                 if priority == 1:
-                    before = normalize(line.before_value)
+                    before = normalize(line.before_value) or "（未設定）"
                     after = after_name
                 elif priority == 2:
                     field_label = "寄附額"

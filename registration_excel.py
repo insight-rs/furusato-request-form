@@ -23,29 +23,9 @@ TEMPLATE_VERSION = "1.0"
 PRODUCT_SHAPES = ("単品", "定期便", "SKU展開")
 LEGACY_TEMPLATE_PATH = Path(__file__).resolve().parent / "config" / "legacy_registration_template.b64"
 
-NOULESS_REFERENCE_FIELDS = (
+REGISTRATION_EXTRA_FIELDS = (
     ("商品代（税込）", "必須", ""),
     ("在庫数", "必須", ""),
-    ("税率", "必須", "8%|10%|非課税"),
-    ("JANコード", "任意", ""),
-    ("参考サイトURL", "任意", ""),
-    ("SNS URL", "任意", ""),
-    ("集荷先名称", "任意", ""),
-    ("集荷先郵便番号", "任意", ""),
-    ("集荷先住所", "任意", ""),
-    ("集荷先電話番号", "任意", ""),
-    ("集荷先担当者", "任意", ""),
-    ("集荷先担当者メール", "任意", ""),
-    ("在庫方式", "必須", "売り切り|月間|無制限"),
-    ("食品区分", "必須", "食品|食品以外"),
-    ("原材料", "食品の場合必須", ""),
-    ("食品一括表示ファイル名", "食品の場合任意", ""),
-    ("掲載ストーリー：こだわり", "任意", ""),
-    ("掲載ストーリー：人", "任意", ""),
-    ("掲載ストーリー：場所", "任意", ""),
-    ("掲載ストーリー：歴史", "任意", ""),
-    ("掲載ストーリー：想い", "任意", ""),
-    ("掲載ストーリー：ふるさと納税による変化", "任意", ""),
 )
 
 
@@ -123,7 +103,7 @@ def _attach_original_application_form(workbook, choice_values, extra_values):
         return next((normalize(choice_values.get(column, "")) for column in columns if normalize(choice_values.get(column, ""))), "")
 
     mapped = {
-        "H6": value("site business"),
+        "H6": value("サイト表示事業者名", "site business"),
         "J10": value("管理コード"),
         "J13": value("（必須）お礼の品名"),
         "J15": value("（条件付き必須）寄附額", "寄附額"),
@@ -237,10 +217,10 @@ def build_registration_template(
     choice.auto_filter.ref = f"A1:H{choice.max_row}"
     _style_sheet(choice, {"A": 20, "B": 16, "C": 32, "D": 34, "E": 14, "F": 12, "G": 42, "H": 60})
 
-    extras = workbook.create_sheet("共通追加情報")
+    extras = workbook.create_sheet("商品管理情報")
     extras.append(["項目", "必須区分", "入力値", "選択肢・説明"])
     _style_header(extras[1])
-    for row_number, (label, requirement, options_text) in enumerate(NOULESS_REFERENCE_FIELDS, start=2):
+    for row_number, (label, requirement, options_text) in enumerate(REGISTRATION_EXTRA_FIELDS, start=2):
         extras.append([label, requirement, extra_values.get(label, ""), options_text.replace("|", " / ")])
         extras.cell(row_number, 3).fill = yellow
         _add_list_validation(extras, f"C{row_number}", options_text.split("|") if options_text else [])
@@ -395,11 +375,18 @@ def read_registration_template(content: bytes, fields: Iterable[RequestFormField
                 continue
             choice_values[source_column] = dict(field.options()).get(value, value)
     extra_values: dict[str, str] = {}
-    if "共通追加情報" in workbook.sheetnames:
-        for row in workbook["共通追加情報"].iter_rows(min_row=2, values_only=True):
+    # 旧テンプレートの「共通追加情報」も取込だけは継続し、既存ファイルを
+    # 利用不能にしない。新テンプレートには商品管理に必要な2項目だけを出す。
+    extra_sheet_name = next(
+        (name for name in ("商品管理情報", "共通追加情報") if name in workbook.sheetnames),
+        "",
+    )
+    if extra_sheet_name:
+        allowed_extra_labels = {label for label, _, _ in REGISTRATION_EXTRA_FIELDS}
+        for row in workbook[extra_sheet_name].iter_rows(min_row=2, values_only=True):
             label = normalize(row[0] if row else "")
             value = normalize(row[2] if len(row) > 2 else "")
-            if label and value:
+            if label in allowed_extra_labels and value:
                 extra_values[label] = value
     if "カテゴリー選択" in workbook.sheetnames:
         category_sheet = workbook["カテゴリー選択"]
@@ -485,7 +472,7 @@ def _read_legacy_workbook(workbook, fields: Iterable[RequestFormField]) -> Regis
         return values[0] if values else ""
 
     aliases = {
-        "site business": ("事業者名", "事業者名称"),
+        "サイト表示事業者名": ("事業者名", "事業者名称"),
         "管理コード": ("品番（リンベル記入）", "品番", "商品コード"),
         "（必須）お礼の品名": ("商品名（サイト掲載用）", "商品名"),
         "（条件付き必須）必要寄付金額": ("寄附額", "寄付額"),
@@ -508,8 +495,6 @@ def _read_legacy_workbook(workbook, fields: Iterable[RequestFormField]) -> Regis
     for label, aliases_ in {
         "商品代（税込）": ("商品代（税込み）", "商品代（税込）", "商品代"),
         "在庫数": ("在庫数",),
-        "原材料名": ("原材料名", "原材料"),
-        "参考URL・SNS": ("参考URL", "SNS"),
     }.items():
         value = first(*aliases_)
         if value:
