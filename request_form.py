@@ -132,6 +132,7 @@ TEMPERATURE_CHANGE_OPTION = "温度帯"
 ALLERGY_CHANGE_OPTION = "アレルギー情報"
 COMPOUND_DONATION_WITH_COST_OPTION = "寄附額（商品代変更アリ）"
 COMPOUND_DONATION_WITHOUT_COST_OPTION = "寄附額（商品代変更ナシ）"
+COMPOUND_STOCK_OPTION = "在庫数"
 NEW_PRODUCT_REQUIRED_COLUMNS = {
     "管理コード",
     "（必須）お礼の品名", "（必須）発送期日種別", "（必須）カテゴリー",
@@ -371,6 +372,19 @@ def _product_label(product) -> str:
     management_code = product.source_values().get("管理コード", "")
     labels = [value for value in (management_code, product.product_name, product.business_name) if value]
     return " | ".join(labels) or "商品名未設定"
+
+
+def _product_draft_key(product) -> str:
+    """履歴の入力値を、再読込後の商品へ安定して結び付けるキーを返す。"""
+
+    source_values = product.source_values()
+    identity = (
+        product.product_id
+        or product.original_product_id
+        or source_values.get(MANAGEMENT_CODE_COLUMN, "")
+        or product.product_name
+    )
+    return f"{product.municipality_id}|{identity}"
 
 
 def _set_policy_issue_type_default(
@@ -649,12 +663,17 @@ def _render_product_change_editor(
     *,
     editor_key: str,
     initial_values: dict[str, str] | None = None,
+    initial_values_by_product: dict[str, dict[str, str]] | None = None,
 ) -> pd.DataFrame:
     """商品ごとに、現在値を上・変更後値を下にして入力を受ける。"""
 
     edited_rows = []
     initial_values = initial_values or {}
+    initial_values_by_product = initial_values_by_product or {}
     for product_index, product in enumerate(products):
+        product_initial_values = initial_values_by_product.get(
+            _product_draft_key(product), {}
+        )
         source_values = product.source_values()
         management_code = source_values.get("管理コード", "") or product.product_id
         with st.container(border=True):
@@ -697,7 +716,9 @@ def _render_product_change_editor(
                     st.markdown(f"##### {section}")
                     previous_section = section
                 field_key = f"{editor_key}_{product_index}_{field.field_id}"
-                if field.source_column in initial_values:
+                if field.source_column in product_initial_values:
+                    initial_value = product_initial_values[field.source_column]
+                elif field.source_column in initial_values:
                     initial_value = initial_values[field.source_column]
                 elif product.product_id:
                     # 既存商品の修正では変更欄に現在値を引き継ぐ。
@@ -991,10 +1012,15 @@ def _new_product_reference(
 def _render_temperature_editor(
     products: list[ProductReference], *, editor_key: str,
     initial_values: dict[str, str] | None = None,
+    initial_values_by_product: dict[str, dict[str, str]] | None = None,
 ) -> pd.DataFrame:
     initial_values = initial_values or {}
+    initial_values_by_product = initial_values_by_product or {}
     rows = []
     for product_index, product in enumerate(products):
+        product_initial_values = initial_values_by_product.get(
+            _product_draft_key(product), initial_values
+        )
         source_values = product.source_values()
         management_code = source_values.get("管理コード", "") or product.product_id
         current = [
@@ -1010,7 +1036,7 @@ def _render_temperature_editor(
             temperature_key = f"{editor_key}_{product_index}"
             imported = [
                 label for label, column in TEMPERATURE_COLUMNS.items()
-                if initial_values.get(column) == "1"
+                if product_initial_values.get(column) == "1"
             ]
             if imported:
                 st.session_state.setdefault(temperature_key, imported)
@@ -1306,11 +1332,16 @@ def _render_allergy_editor(
     *,
     editor_key: str,
     initial_values: dict[str, str] | None = None,
+    initial_values_by_product: dict[str, dict[str, str]] | None = None,
 ) -> pd.DataFrame:
     initial_values = initial_values or {}
+    initial_values_by_product = initial_values_by_product or {}
     rows = []
     allergy_options = [_allergy_display_name(field) for field in allergy_fields]
     for product_index, product in enumerate(products):
+        product_initial_values = initial_values_by_product.get(
+            _product_draft_key(product), initial_values
+        )
         source_values = product.source_values()
         current_allergies = [
             _allergy_display_name(field)
@@ -1334,7 +1365,7 @@ def _render_allergy_editor(
             allergy_items_key = f"{editor_key}_{product_index}_items"
             imported_allergies = [
                 _allergy_display_name(field) for field in allergy_fields
-                if initial_values.get(field.source_column) == "1"
+                if product_initial_values.get(field.source_column) == "1"
             ]
             if imported_allergies:
                 st.session_state.setdefault(allergy_items_key, imported_allergies)
@@ -1348,7 +1379,7 @@ def _render_allergy_editor(
                 allergy_note_key = f"{editor_key}_{product_index}_note"
                 st.session_state.setdefault(
                     allergy_note_key,
-                    initial_values.get(allergy_note_field.source_column, ""),
+                    product_initial_values.get(allergy_note_field.source_column, ""),
                 )
                 updated_note = st.text_input(
                     "アレルギー特記事項",
@@ -1493,7 +1524,7 @@ def _load_saved_request_into_draft(
     products: list,
     form_fields: list[RequestFormField],
 ) -> list[str]:
-    """保存済み明細を、現在の商品マスタを基に編集用の状態へ戻す。"""
+    """保存済み明細を、入力ウィジェットへ再編集可能な状態で戻す。"""
 
     product_by_id = {
         (product.municipality_id, product.product_id): product for product in products
@@ -1502,9 +1533,29 @@ def _load_saved_request_into_draft(
         (product.municipality_id, product.original_product_id): product
         for product in products if product.original_product_id
     }
+    is_new_product = saved_request.work_category == "新規商品登録"
+    saved_after_values = {
+        detail.field_name: detail.after_value for detail in saved_request.details
+    }
+    fallback_new_product = None
+    if is_new_product:
+        fallback_new_product = replace(
+            _new_product_reference(
+                saved_request.municipality_id,
+                saved_request.municipality_name,
+                form_fields,
+            ),
+            product_name=(
+                saved_after_values.get(PRODUCT_NAME_COLUMN, "") or "新規商品"
+            ),
+            business_name=saved_after_values.get("サイト表示事業者名", ""),
+        )
+
     selected_products = []
-    selected_fields = []
-    lines = []
+    selected_change_options: list[RequestFormField | str] = []
+    initial_values_by_product: dict[str, dict[str, str]] = {}
+    backlog_values_by_product: dict[str, dict[str, str]] = {}
+    image_instructions_by_product: dict[str, str] = {}
     missing_products = []
     for detail in saved_request.details:
         product = (
@@ -1512,27 +1563,82 @@ def _load_saved_request_into_draft(
             or product_by_original_id.get(
                 (saved_request.municipality_id, detail.original_product_id)
             )
+            or fallback_new_product
         )
         if product is None:
             missing_products.append(detail.product_id or detail.original_product_id or "（ID未設定）")
             continue
         field = find_request_form_field(form_fields, detail.field_name)
-        if field is not None and field not in selected_fields:
-            selected_fields.append(field)
+        field_is_selectable_for_history = (
+            field is not None
+            and not is_new_product
+            and detail.instruction != "【自動設定】"
+            and field.source_column not in HIDDEN_FORM_COLUMNS
+            and field.source_column != POINTS_COLUMN
+        )
+        if field_is_selectable_for_history:
+            if _is_allergy_item_field(field) or field.source_column == ALLERGY_NOTE_COLUMN:
+                if ALLERGY_CHANGE_OPTION not in selected_change_options:
+                    selected_change_options.append(ALLERGY_CHANGE_OPTION)
+            elif field.source_column in TEMPERATURE_COLUMNS.values():
+                if TEMPERATURE_CHANGE_OPTION not in selected_change_options:
+                    selected_change_options.append(TEMPERATURE_CHANGE_OPTION)
+            elif _is_donation_field(field):
+                # 商品代の有無を確認後、下で専用の選択肢へ置き換える。
+                pass
+            elif field not in selected_change_options:
+                selected_change_options.append(field)
         if product not in selected_products:
             selected_products.append(product)
-        lines.append(ProductCorrectionLine(
-            product=product,
-            field_name=detail.field_name,
-            before_value=detail.before_value,
-            after_value=detail.after_value,
-            instruction=detail.instruction,
-            image_instruction=detail.image_instruction,
-            column_number=product.source_column_number(detail.field_name),
-            display_name=field.label if field is not None else detail.field_name,
-        ))
+        product_key = _product_draft_key(product)
+        if detail.field_name.startswith(BACKLOG_ONLY_PREFIX):
+            backlog_field_name = detail.field_name.removeprefix(BACKLOG_ONLY_PREFIX)
+            backlog_values_by_product.setdefault(product_key, {})[
+                backlog_field_name
+            ] = detail.after_value
+            if not is_new_product and backlog_field_name == "在庫数":
+                if COMPOUND_STOCK_OPTION not in selected_change_options:
+                    selected_change_options.append(COMPOUND_STOCK_OPTION)
+            if not is_new_product and backlog_field_name == "品番取得依頼":
+                management_field = find_request_form_field(
+                    form_fields, MANAGEMENT_CODE_COLUMN
+                )
+                if (
+                    management_field is not None
+                    and management_field not in selected_change_options
+                ):
+                    selected_change_options.append(management_field)
+        else:
+            initial_values_by_product.setdefault(product_key, {})[
+                detail.field_name
+            ] = detail.after_value
+        if detail.image_instruction:
+            image_instructions_by_product[product_key] = detail.image_instruction
 
-    st.session_state.correction_lines = lines
+    if not is_new_product:
+        has_donation = any(
+            _is_donation_field(field)
+            for field in (
+                find_request_form_field(form_fields, detail.field_name)
+                for detail in saved_request.details
+            )
+            if field is not None
+        )
+        if has_donation:
+            cost_changed = any(
+                "商品代" in detail.field_name for detail in saved_request.details
+            )
+            selected_change_options.append(
+                COMPOUND_DONATION_WITH_COST_OPTION
+                if cost_changed else COMPOUND_DONATION_WITHOUT_COST_OPTION
+            )
+
+    # 既存の追加済み明細ではなく、入力欄へ復元する。保存ボタンを押した場合は
+    # 現在の入力値から明細を自動再作成するため、重複登録にならない。
+    st.session_state.correction_lines = []
+    st.session_state.loaded_history_initial_values = initial_values_by_product
+    st.session_state.loaded_history_backlog_values = backlog_values_by_product
+    st.session_state.loaded_history_image_instructions = image_instructions_by_product
     st.session_state.request_unit = (
         saved_request.request_unit
         if saved_request.request_unit in REQUEST_UNITS else "商品単位"
@@ -1547,14 +1653,50 @@ def _load_saved_request_into_draft(
         else "修正"
     )
     st.session_state.request_municipality_id = saved_request.municipality_id
+    st.session_state.request_business_name = "すべて"
+    st.session_state.request_public_products_only = False
     st.session_state.request_selected_products = selected_products
-    st.session_state.request_selected_form_fields = selected_fields
+    st.session_state.request_correction_type = "複合的な修正"
+    st.session_state.request_selected_form_fields = selected_change_options
     st.session_state.request_note = saved_request.note
     st.session_state[f"request_backlog_issue_type_{saved_request.municipality_id}"] = (
         saved_request.backlog_issue_type
     )
     st.session_state.editing_source_request_id = saved_request.request_id
     st.session_state.editing_source_backlog_issue_key = saved_request.backlog_issue_key
+    st.session_state.backlog_history_action = (
+        "既存のBacklog課題を更新する"
+        if saved_request.backlog_issue_key
+        else "新しいBacklog課題を作成する"
+    )
+    if is_new_product:
+        new_values = {
+            detail.field_name: detail.after_value
+            for detail in saved_request.details
+            if not detail.field_name.startswith(BACKLOG_ONLY_PREFIX)
+        }
+        new_backlog_values = {
+            detail.field_name.removeprefix(BACKLOG_ONLY_PREFIX): detail.after_value
+            for detail in saved_request.details
+            if detail.field_name.startswith(BACKLOG_ONLY_PREFIX)
+        }
+        st.session_state.loaded_history_new_product_values = new_values
+        st.session_state.loaded_history_new_product_backlog_values = new_backlog_values
+        st.session_state.new_product_backlog_values = {
+            "在庫数": new_backlog_values.get("在庫数", ""),
+            "商品代（税込）": new_backlog_values.get("商品代（税込）", ""),
+        }
+        business_name = new_values.get("サイト表示事業者名", "")
+        if business_name:
+            st.session_state.loaded_history_business_name = business_name
+        product_shape = new_backlog_values.get("商品形態", "単品") or "単品"
+        st.session_state.request_use_advanced_product_shape = product_shape != "単品"
+        st.session_state.request_product_shape = product_shape
+        st.session_state.new_product_code_method = (
+            "品番取得を依頼する"
+            if "品番取得依頼" in new_backlog_values
+            else "品番を入力する"
+        )
     st.session_state.product_change_editor_version = (
         st.session_state.get("product_change_editor_version", 0) + 1
     )
@@ -1632,7 +1774,7 @@ def render_product_request_tab(
         st.caption(
             "過去の依頼を修正するには、下の履歴一覧から1件を選ぶか、"
             "Backlog課題キーまたは依頼IDを入力して履歴を読み込みます。"
-            "保存時は同じBacklog親課題を更新し、商品情報マスタには改訂履歴を追加します。"
+            "読み込み後、既存のBacklog課題を更新するか、新しい課題を作成するか選べます。"
         )
         st.info(
             "一覧に表示されるのは保存済みの依頼です。別担当者の依頼も、"
@@ -1757,7 +1899,7 @@ def render_product_request_tab(
                 ) not in own_requester_keys:
                     st.info(
                         f"別担当者（{selected_summary.requester}）の依頼です。"
-                        "読み込んで保存すると同じBacklog課題を更新します。"
+                        "読み込み後にBacklogの登録方法を選択してください。"
                     )
         else:
             st.caption("条件に一致する保存済み依頼はありません。")
@@ -1823,7 +1965,8 @@ def render_product_request_tab(
                     if saved_request.backlog_issue_key:
                         st.success(
                             f"依頼ID：{saved_request.request_id} を読み込みました。"
-                            "内容を修正して保存すると、同じBacklog親課題を更新します。"
+                            "入力欄へ過去の内容を反映しました。"
+                            "編集後に、既存課題の更新または新規課題の作成を選択できます。"
                         )
                     else:
                         st.success(
@@ -1879,6 +2022,36 @@ def render_product_request_tab(
             format_func=lambda municipality_id: municipality_names[municipality_id],
             key="request_municipality_id",
         )
+
+    editing_source_request_id_for_ui = str(
+        st.session_state.get("editing_source_request_id", "")
+    ).strip()
+    editing_source_issue_key_for_ui = str(
+        st.session_state.get("editing_source_backlog_issue_key", "")
+    ).strip()
+    if editing_source_request_id_for_ui:
+        with st.container(border=True):
+            st.subheader("履歴再編集時のBacklog登録方法")
+            backlog_action_options = ["新しいBacklog課題を作成する"]
+            if editing_source_issue_key_for_ui:
+                backlog_action_options.insert(0, "既存のBacklog課題を更新する")
+            if st.session_state.get("backlog_history_action") not in backlog_action_options:
+                st.session_state.backlog_history_action = backlog_action_options[0]
+            backlog_history_action = st.segmented_control(
+                "Backlogの処理",
+                backlog_action_options,
+                key="backlog_history_action",
+                width="stretch",
+            )
+            if backlog_history_action == "既存のBacklog課題を更新する":
+                st.caption(
+                    f"既存課題 {editing_source_issue_key_for_ui} の件名・詳細・設定を更新します。"
+                )
+            else:
+                st.caption(
+                    "過去依頼を元に新しいBacklog課題を作成します。"
+                    "既存課題の内容は変更しません。"
+                )
 
     try:
         active_backlog_configs = backlog_configs_by_municipality_id(
@@ -1944,6 +2117,21 @@ def render_product_request_tab(
     product_shape = "単品"
     registration_source_file = None
     imported_registration = st.session_state.get("registration_excel_import")
+    loaded_history_initial_values = st.session_state.get(
+        "loaded_history_initial_values", {}
+    )
+    loaded_history_new_product_values = st.session_state.get(
+        "loaded_history_new_product_values", {}
+    )
+    loaded_history_backlog_values = st.session_state.get(
+        "loaded_history_backlog_values", {}
+    )
+    loaded_history_new_product_backlog_values = st.session_state.get(
+        "loaded_history_new_product_backlog_values", {}
+    )
+    loaded_history_image_instructions = st.session_state.get(
+        "loaded_history_image_instructions", {}
+    )
     if request_unit == "商品単位" or is_new_product:
         with st.container(border=True):
             st.subheader("商品形態")
@@ -2126,6 +2314,16 @@ def render_product_request_tab(
                 "お礼の品ID・オリジナルお礼の品IDは空欄のまま保存します。"
                 "画面では日本語を選び、商品データにはチョイス指定のコードを保存します。"
             )
+            loaded_business_name = st.session_state.pop(
+                "loaded_history_business_name", ""
+            )
+            if loaded_business_name:
+                if loaded_business_name in business_options:
+                    st.session_state.request_new_business_mode = "既存事業者から選択"
+                    st.session_state.request_new_existing_business = loaded_business_name
+                else:
+                    st.session_state.request_new_business_mode = "新しい事業者を入力"
+                    st.session_state.request_new_business_name = loaded_business_name
             business_mode = st.segmented_control(
                 "事業者の指定方法",
                 ("既存事業者から選択", "新しい事業者を入力"),
@@ -2294,6 +2492,7 @@ def render_product_request_tab(
                     ],
                     COMPOUND_DONATION_WITH_COST_OPTION,
                     COMPOUND_DONATION_WITHOUT_COST_OPTION,
+                    COMPOUND_STOCK_OPTION,
                     TEMPERATURE_CHANGE_OPTION,
                     ALLERGY_CHANGE_OPTION,
                 ]
@@ -2391,9 +2590,16 @@ def render_product_request_tab(
                         fields_for_input,
                         editor_key=f"product_change_editor_{editor_context}",
                         initial_values=(
-                            imported_registration.choice_values
-                            if is_new_product and imported_registration is not None
-                            else None
+                            loaded_history_new_product_values
+                            if is_new_product and loaded_history_new_product_values
+                            else (
+                                imported_registration.choice_values
+                                if is_new_product and imported_registration is not None
+                                else None
+                            )
+                        ),
+                        initial_values_by_product=(
+                            loaded_history_initial_values if not is_new_product else None
                         ),
                     )
                 elif fields_for_input:
@@ -2421,16 +2627,31 @@ def render_product_request_tab(
                         and COMPOUND_DONATION_WITHOUT_COST_OPTION in selected_change_options
                     )
                 )
+                compound_stock_requested = (
+                    not is_new_product
+                    and correction_type == "複合的な修正"
+                    and COMPOUND_STOCK_OPTION in selected_change_options
+                )
                 if donation_with_cost_requested:
                     st.subheader("商品代の変更")
                     st.caption("寄附額とあわせて変更後の商品代を入力してください。")
                     for product_index, product in enumerate(selected_products):
                         with st.container(border=True):
                             st.markdown(f"**{_product_label(product)}**")
+                            product_history_backlog = loaded_history_backlog_values.get(
+                                _product_draft_key(product), {}
+                            )
+                            cost_widget_key = (
+                                f"correction_cost_value_{editor_context}_{product_index}"
+                            )
+                            st.session_state.setdefault(
+                                cost_widget_key,
+                                product_history_backlog.get("商品代（税込）", ""),
+                            )
                             product_cost = st.text_input(
                                 _required_label("変更後の商品代（税込・必須）"),
                                 placeholder="半角数字で入力",
-                                key=f"correction_cost_value_{editor_context}_{product_index}",
+                                key=cost_widget_key,
                                 persist_state="session",
                             )
                             values = {
@@ -2443,6 +2664,45 @@ def render_product_request_tab(
                         product_index: {"商品代変更": "商品代を変更しない"}
                         for product_index, _ in enumerate(selected_products)
                     }
+                if compound_stock_requested:
+                    st.subheader("在庫数の変更")
+                    for product_index, product in enumerate(selected_products):
+                        with st.container(border=True):
+                            st.markdown(f"**{_product_label(product)}**")
+                            product_history_backlog = loaded_history_backlog_values.get(
+                                _product_draft_key(product), {}
+                            )
+                            history_stock = product_history_backlog.get("在庫数", "")
+                            stock_mode_key = (
+                                f"compound_stock_mode_{editor_context}_{product_index}"
+                            )
+                            stock_value_key = (
+                                f"compound_stock_value_{editor_context}_{product_index}"
+                            )
+                            st.session_state.setdefault(
+                                stock_mode_key,
+                                "無制限" if history_stock == "無制限" else "数量を入力",
+                            )
+                            stock_mode = st.segmented_control(
+                                "変更後の在庫",
+                                options=["数量を入力", "無制限"],
+                                key=stock_mode_key,
+                                persist_state="session",
+                            )
+                            st.session_state.setdefault(stock_value_key, history_stock)
+                            stock_value = (
+                                "無制限"
+                                if stock_mode == "無制限"
+                                else st.text_input(
+                                    "変更後の在庫数",
+                                    placeholder="半角数字で入力",
+                                    key=stock_value_key,
+                                    persist_state="session",
+                                )
+                            )
+                            correction_backlog_values.setdefault(product_index, {})[
+                                "在庫数"
+                            ] = stock_value
                 if not is_new_product and product_shape == "定期便":
                     st.subheader("定期便のお届け内容")
                     subscription_detail_editor = _render_subscription_detail_editor(
@@ -2463,19 +2723,35 @@ def render_product_request_tab(
                     for product_index, product in enumerate(selected_products):
                         with st.container(border=True):
                             st.markdown(f"**{_product_label(product)}**")
+                            product_history_values = loaded_history_initial_values.get(
+                                _product_draft_key(product), {}
+                            )
+                            method_key = (
+                                f"compound_code_method_{editor_context}_{product_index}"
+                            )
+                            requested_code = product_history_values.get(
+                                MANAGEMENT_CODE_COLUMN, ""
+                            )
+                            st.session_state.setdefault(
+                                method_key,
+                                "新品番を入力する" if requested_code else "品番取得を依頼する",
+                            )
                             code_method = st.segmented_control(
                                 _required_label("品番の用意方法（必須）"),
                                 ["新品番を入力する", "品番取得を依頼する"],
-                                default="新品番を入力する",
-                                key=f"compound_code_method_{editor_context}_{product_index}",
+                                key=method_key,
                                 persist_state="session",
                             )
                             values = correction_backlog_values.setdefault(product_index, {})
                             values["品番取得方法"] = code_method or ""
                             if code_method == "新品番を入力する":
+                                new_code_key = (
+                                    f"compound_new_code_{editor_context}_{product_index}"
+                                )
+                                st.session_state.setdefault(new_code_key, requested_code)
                                 values["新品番"] = st.text_input(
                                     "新品番",
-                                    key=f"compound_new_code_{editor_context}_{product_index}",
+                                    key=new_code_key,
                                     persist_state="session",
                                 )
                             correction_backlog_values[product_index] = values
@@ -2486,6 +2762,10 @@ def render_product_request_tab(
                         if imported_registration is not None else {}
                     )
                     imported_stock = imported_extras.get("在庫数", "")
+                    if loaded_history_new_product_backlog_values:
+                        imported_stock = loaded_history_new_product_backlog_values.get(
+                            "在庫数", imported_stock
+                        )
                     stock_mode_key = f"new_product_stock_mode_{editor_context}"
                     stock_value_key = f"new_product_stock_quantity_{editor_context}"
                     cost_key = f"new_product_cost_{editor_context}"
@@ -2497,7 +2777,13 @@ def render_product_request_tab(
                         stock_value_key,
                         "" if imported_stock == "無制限" else imported_stock,
                     )
-                    st.session_state.setdefault(cost_key, imported_extras.get("商品代（税込）", ""))
+                    st.session_state.setdefault(
+                        cost_key,
+                        loaded_history_new_product_backlog_values.get(
+                            "商品代（税込）",
+                            imported_extras.get("商品代（税込）", ""),
+                        ),
+                    )
                     stock_mode = st.segmented_control(
                         _required_label("在庫数（必須）"),
                         options=["数量を入力", "無制限"],
@@ -2519,27 +2805,48 @@ def render_product_request_tab(
                         key=cost_key,
                         persist_state="session",
                     )
+                    shipping_period_key = f"shipping_period_mode_{editor_context}"
+                    shipping_period_history = loaded_history_new_product_backlog_values.get(
+                        "発送可能時期", ""
+                    )
+                    st.session_state.setdefault(
+                        shipping_period_key,
+                        "時期指定あり"
+                        if shipping_period_history and shipping_period_history != "通年"
+                        else "通年",
+                    )
                     shipping_period_mode = st.segmented_control(
                         _required_label("発送可能時期（必須）"),
                         ["通年", "時期指定あり"],
-                        default="通年",
-                        key=f"shipping_period_mode_{editor_context}",
+                        key=shipping_period_key,
                         persist_state="session",
                     )
                     shipping_period_from = None
                     shipping_period_to = None
                     if shipping_period_mode == "時期指定あり":
+                        history_from = None
+                        history_to = None
+                        if "～" in shipping_period_history:
+                            history_from_text, history_to_text = shipping_period_history.split(
+                                "～", 1
+                            )
+                            history_from = _parse_date_value(history_from_text)
+                            history_to = _parse_date_value(history_to_text)
+                        shipping_from_key = f"shipping_period_from_{editor_context}"
+                        shipping_to_key = f"shipping_period_to_{editor_context}"
+                        st.session_state.setdefault(shipping_from_key, history_from)
+                        st.session_state.setdefault(shipping_to_key, history_to)
                         period_columns = st.columns(2)
                         with period_columns[0]:
                             shipping_period_from = st.date_input(
-                                "発送可能期間FROM", value=None, format="YYYY-MM-DD",
-                                key=f"shipping_period_from_{editor_context}",
+                                "発送可能期間FROM", format="YYYY-MM-DD",
+                                key=shipping_from_key,
                                 persist_state="session",
                             )
                         with period_columns[1]:
                             shipping_period_to = st.date_input(
-                                "発送可能期間TO", value=None, format="YYYY-MM-DD",
-                                key=f"shipping_period_to_{editor_context}",
+                                "発送可能期間TO", format="YYYY-MM-DD",
+                                key=shipping_to_key,
                                 persist_state="session",
                             )
                     if product_shape == "定期便":
@@ -2613,9 +2920,16 @@ def render_product_request_tab(
                         selected_products,
                         editor_key=f"temperature_editor_{editor_context}",
                         initial_values=(
-                            imported_registration.choice_values
-                            if is_new_product and imported_registration is not None
-                            else None
+                            loaded_history_new_product_values
+                            if is_new_product and loaded_history_new_product_values
+                            else (
+                                imported_registration.choice_values
+                                if is_new_product and imported_registration is not None
+                                else None
+                            )
+                        ),
+                        initial_values_by_product=(
+                            loaded_history_initial_values if not is_new_product else None
                         ),
                     )
                 if allergy_change_requested:
@@ -2626,9 +2940,16 @@ def render_product_request_tab(
                         allergy_note_field,
                         editor_key=f"allergy_change_editor_{editor_context}",
                         initial_values=(
-                            imported_registration.choice_values
-                            if is_new_product and imported_registration is not None
-                            else None
+                            loaded_history_new_product_values
+                            if is_new_product and loaded_history_new_product_values
+                            else (
+                                imported_registration.choice_values
+                                if is_new_product and imported_registration is not None
+                                else None
+                            )
+                        ),
+                        initial_values_by_product=(
+                            loaded_history_initial_values if not is_new_product else None
                         ),
                     )
                 image_instruction: dict[int, str] = {}
@@ -2637,10 +2958,24 @@ def render_product_request_tab(
                         "画像修正が必要な商品だけ入力してください。入力した商品をまとめて画像子課題にします。"
                     )
                     for product_index, product in enumerate(selected_products):
+                        image_key = (
+                            f"request_image_instruction_{editor_context}_{product_index}"
+                        )
+                        history_image_instruction = loaded_history_image_instructions.get(
+                            _product_draft_key(product), ""
+                        )
+                        if is_new_product and not history_image_instruction:
+                            history_image_instruction = next(
+                                iter(loaded_history_image_instructions.values()), ""
+                            )
+                        st.session_state.setdefault(
+                            image_key,
+                            history_image_instruction,
+                        )
                         image_instruction[product_index] = st.text_area(
                             f"{_product_label(product)} の画像修正指示",
                             placeholder="例：1枚目を添付画像へ差し替え。背景を白に統一。",
-                            key=f"request_image_instruction_{editor_context}_{product_index}",
+                            key=image_key,
                             persist_state="session",
                         )
                 add_lines = st.button(
@@ -2711,6 +3046,25 @@ def render_product_request_tab(
                                 before_value=product.source_values().get("商品代（税込）", ""),
                                 after_value=cost_value,
                                 display_name="商品代",
+                            ))
+                if compound_stock_requested:
+                    for product_index, product in enumerate(selected_products):
+                        stock_value = correction_backlog_values.get(
+                            product_index, {}
+                        ).get("在庫数", "").strip()
+                        if stock_value != "無制限" and not _is_nonnegative_integer(
+                            stock_value
+                        ):
+                            input_errors.append(
+                                f"{_product_label(product)}: 変更後の在庫数"
+                            )
+                        elif stock_value:
+                            new_lines.append(ProductCorrectionLine(
+                                product=product,
+                                field_name=f"{BACKLOG_ONLY_PREFIX}在庫数",
+                                before_value="",
+                                after_value=stock_value,
+                                display_name="在庫数（Backlogのみ）",
                             ))
                 if is_new_product:
                     registration_product = (
@@ -3479,6 +3833,14 @@ def render_product_request_tab(
             editing_source_backlog_issue_key = str(
                 st.session_state.get("editing_source_backlog_issue_key", "")
             ).strip()
+            backlog_history_action = str(
+                st.session_state.get("backlog_history_action", "")
+            ).strip()
+            backlog_issue_key_to_update = (
+                editing_source_backlog_issue_key
+                if backlog_history_action == "既存のBacklog課題を更新する"
+                else ""
+            )
             retrying_failed_backlog = bool(
                 editing_source_request_id and not editing_source_backlog_issue_key
             )
@@ -3609,10 +3971,10 @@ def render_product_request_tab(
                 issue_summary = backlog_issue_title.strip() or generated_summary
                 if urgent_request and not issue_summary.startswith("【至急】"):
                     issue_summary = f"【至急】{issue_summary}"
-                if editing_source_backlog_issue_key:
+                if backlog_issue_key_to_update:
                     issue = update_issue(
                         config=target_backlog_config,
-                        issue_key=editing_source_backlog_issue_key,
+                        issue_key=backlog_issue_key_to_update,
                         summary=issue_summary,
                         description=description,
                         priority_id=backlog_priority_id,
@@ -3761,6 +4123,15 @@ def render_product_request_tab(
             st.session_state.pop("new_product_excel_values", None)
             st.session_state.pop("registration_excel_import", None)
             st.session_state.pop("registration_excel_fingerprint", None)
+            for history_state_key in (
+                "loaded_history_initial_values",
+                "loaded_history_backlog_values",
+                "loaded_history_image_instructions",
+                "loaded_history_new_product_values",
+                "loaded_history_new_product_backlog_values",
+                "backlog_history_action",
+            ):
+                st.session_state.pop(history_state_key, None)
             if editing_source_request_id:
                 st.session_state.pop("editing_source_request_id", None)
                 st.session_state.pop("editing_source_backlog_issue_key", None)

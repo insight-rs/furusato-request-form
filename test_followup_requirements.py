@@ -17,12 +17,20 @@ from product_requests import (
     ProductCorrectionLine,
     ProductCorrectionRequest,
     ProductReference,
+    SavedProductCorrectionDetail,
+    SavedProductCorrectionRequest,
     build_saved_product_correction_request_summaries,
     build_backlog_issue_content,
 )
 from registration_excel import build_registration_template, read_registration_template
 from form_definitions import RequestFormField
-from request_form import _format_input_error_message
+from request_form import (
+    COMPOUND_STOCK_OPTION,
+    _format_input_error_message,
+    _load_saved_request_into_draft,
+    _product_draft_key,
+)
+import streamlit as st
 
 
 def _request():
@@ -132,6 +140,110 @@ def test_detail_validation_errors_are_grouped_with_line_breaks():
 
     assert "**商品A | 事業者A**\n- 商品名\n- 発送期日\n- 商品代（税込）" in message
     assert "**商品B | 事業者B**\n- 在庫数" in message
+
+
+def test_saved_history_restores_existing_product_values_into_input_draft():
+    st.session_state.clear()
+    name_field = RequestFormField(
+        field_id="F1", visibility="対象項目選択肢", requirement="必須",
+        label="商品名", source_column="（必須）お礼の品名", input_kind="テキスト",
+    )
+    product = ProductReference(
+        municipality_id="m1", municipality_name="自治体", product_id="p1",
+        original_product_id="", product_name="旧商品 OLD-1",
+        business_id="b1", business_name="事業者",
+        source_row=(("管理コード", "OLD-1"), ("（必須）お礼の品名", "旧商品 OLD-1")),
+    )
+    saved = SavedProductCorrectionRequest(
+        request_id="REQ-OLD", backlog_issue_key="TEST-10",
+        municipality_id="m1", municipality_name="自治体", requester="担当者",
+        request_unit="商品単位", work_category="一般業務", note="備考",
+        backlog_issue_type="既存ページ修正",
+        details=(
+            SavedProductCorrectionDetail(
+                product_id="p1", original_product_id="",
+                field_name="（必須）お礼の品名", before_value="旧商品 OLD-1",
+                after_value="新商品 OLD-1",
+            ),
+            SavedProductCorrectionDetail(
+                product_id="p1", original_product_id="",
+                field_name="【Backlogのみ】在庫数", before_value="", after_value="30",
+            ),
+        ),
+    )
+
+    missing = _load_saved_request_into_draft(
+        saved_request=saved, products=[product], form_fields=[name_field]
+    )
+
+    assert missing == []
+    assert st.session_state.correction_lines == []
+    assert st.session_state.loaded_history_initial_values[_product_draft_key(product)][
+        "（必須）お礼の品名"
+    ] == "新商品 OLD-1"
+    assert st.session_state.loaded_history_backlog_values[_product_draft_key(product)][
+        "在庫数"
+    ] == "30"
+    assert name_field in st.session_state.request_selected_form_fields
+    assert COMPOUND_STOCK_OPTION in st.session_state.request_selected_form_fields
+    assert st.session_state.backlog_history_action == "既存のBacklog課題を更新する"
+
+
+def test_saved_new_product_without_master_id_restores_as_new_product_draft():
+    st.session_state.clear()
+    fields = [
+        RequestFormField(
+            field_id="F1", visibility="対象項目選択肢", requirement="必須",
+            label="商品名", source_column="（必須）お礼の品名", input_kind="テキスト",
+        ),
+        RequestFormField(
+            field_id="F2", visibility="対象項目選択肢", requirement="必須",
+            label="事業者名", source_column="サイト表示事業者名", input_kind="テキスト",
+        ),
+    ]
+    saved = SavedProductCorrectionRequest(
+        request_id="REQ-NEW", backlog_issue_key="",
+        municipality_id="m1", municipality_name="自治体", requester="担当者",
+        request_unit="新規商品登録", work_category="新規商品登録", note="備考",
+        backlog_issue_type="新規商品登録",
+        details=(
+            SavedProductCorrectionDetail(
+                product_id="", original_product_id="",
+                field_name="（必須）お礼の品名", before_value="", after_value="新商品 NEW-1",
+            ),
+            SavedProductCorrectionDetail(
+                product_id="", original_product_id="",
+                field_name="サイト表示事業者名", before_value="", after_value="既存事業者",
+            ),
+            SavedProductCorrectionDetail(
+                product_id="", original_product_id="",
+                field_name="【Backlogのみ】商品代（税込）", before_value="", after_value="1200",
+            ),
+        ),
+    )
+
+    missing = _load_saved_request_into_draft(
+        saved_request=saved, products=[], form_fields=fields
+    )
+
+    assert missing == []
+    assert st.session_state.request_mode == "新規商品登録"
+    assert st.session_state.loaded_history_new_product_values["（必須）お礼の品名"] == "新商品 NEW-1"
+    assert st.session_state.loaded_history_business_name == "既存事業者"
+    assert st.session_state.new_product_backlog_values["商品代（税込）"] == "1200"
+    assert st.session_state.backlog_history_action == "新しいBacklog課題を作成する"
+
+
+def test_history_edit_can_choose_existing_issue_update_or_new_issue_creation():
+    source = Path(__file__).with_name("request_form.py").read_text(encoding="utf-8")
+
+    assert '"既存のBacklog課題を更新する"' in source
+    assert '"新しいBacklog課題を作成する"' in source
+    assert 'key="backlog_history_action"' in source
+    assert "backlog_issue_key_to_update = (" in source
+    update_branch = source.index("if backlog_issue_key_to_update:")
+    create_branch = source.index("else:\n                    issue = create_issue(", update_branch)
+    assert update_branch < create_branch
 
 
 def test_backlog_config_accepts_product_code_routing_columns():
