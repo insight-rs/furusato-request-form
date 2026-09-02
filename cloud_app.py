@@ -14,7 +14,7 @@ import request_form as request_form_module
 from runtime_config import CONFIG_SPREADSHEET_ID, PRODUCT_SPREADSHEET_ID, google_credentials_path
 
 
-EXPECTED_REQUEST_FORM_RUNTIME_VERSION = "2026-08-25.2"
+EXPECTED_REQUEST_FORM_RUNTIME_VERSION = "2026-09-02.1"
 if getattr(request_form_module, "REQUEST_FORM_RUNTIME_VERSION", "") != EXPECTED_REQUEST_FORM_RUNTIME_VERSION:
     request_form_module = importlib.reload(request_form_module)
 render_backlog_status_sync = request_form_module.render_backlog_status_sync

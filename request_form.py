@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from collections.abc import Callable
 import os
 import re
+import threading
+import time
+from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -211,7 +215,7 @@ CORRECTION_TYPE_COLUMNS = {
     "商品説明文・容量変更": {"説明", "容量"},
 }
 BACKLOG_ONLY_PREFIX = "【Backlogのみ】"
-REQUEST_FORM_RUNTIME_VERSION = "2026-08-25.2"
+REQUEST_FORM_RUNTIME_VERSION = "2026-09-02.1"
 JST = ZoneInfo("Asia/Tokyo")
 SAME_DAY_CORRECTION_TYPES = {"在庫数変更", "表示・非表示切り替え"}
 
@@ -286,69 +290,129 @@ def _own_requester_keys(users, login_email: str) -> set[tuple[str, str]]:
     }
 
 
-# ProductReference is an immutable dataclass. Keep the large, all-municipality
-# master as one shared resource instead of making a deserialized copy for every
-# connected user. This materially reduces memory use during company-wide tests.
+_MASTER_LOAD_LOCK = threading.RLock()
+_SHARED_MASTER_VALUES: dict[tuple[str, ...], Any] = {}
+
+
+def _shared_master_value(
+    cache_key: tuple[str, ...],
+    loader: Callable[[], Any],
+) -> Any:
+    """Load a master once across concurrent sessions, retrying Sheets quota errors."""
+
+    with _MASTER_LOAD_LOCK:
+        if cache_key in _SHARED_MASTER_VALUES:
+            return _SHARED_MASTER_VALUES[cache_key]
+
+        delay_seconds = 5
+        for attempt in range(5):
+            try:
+                value = loader()
+                _SHARED_MASTER_VALUES[cache_key] = value
+                return value
+            except Exception as error:
+                message = str(error)
+                is_quota_error = "429" in message and "Quota exceeded" in message
+                if not is_quota_error or attempt == 4:
+                    raise
+                time.sleep(delay_seconds)
+                delay_seconds = min(delay_seconds * 2, 30)
+
+    raise RuntimeError("マスタを読み込めませんでした。")
+
+
+def _clear_shared_master_values(*loader_names: str) -> None:
+    """Clear process-level master values for the requested loaders."""
+
+    with _MASTER_LOAD_LOCK:
+        targets = set(loader_names)
+        for cache_key in list(_SHARED_MASTER_VALUES):
+            if not targets or cache_key[0] in targets:
+                del _SHARED_MASTER_VALUES[cache_key]
+
+
+# ProductReference is immutable. Keep the large, all-municipality master as one
+# shared resource instead of making a deserialized copy for every connected user.
 @st.cache_resource(max_entries=2, show_spinner=False)
 def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
-    return tuple(
-        load_product_references(
-            spreadsheet_id=product_spreadsheet_id,
-            credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("products", product_spreadsheet_id, credentials_path_text),
+        lambda: tuple(
+            load_product_references(
+                spreadsheet_id=product_spreadsheet_id,
+                credentials_path=Path(credentials_path_text),
+            )
         )
     )
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_form_fields(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_request_form_fields(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("form_fields", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_request_form_fields(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_policies(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_policy_entries(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("policies", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_policy_entries(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_backlog_configs(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_backlog_configs(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("backlog_configs", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_backlog_configs(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_backlog_issue_types(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_backlog_issue_types(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("backlog_issue_types", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_backlog_issue_types(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_backlog_project_users(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("backlog_users", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_backlog_project_users(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
-@st.cache_data(max_entries=4, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_saved_request_summaries(
     product_spreadsheet_id: str,
     credentials_path_text: str,
-    allowed_municipality_ids: tuple[str, ...],
 ):
-    return load_saved_product_correction_request_summaries(
-        spreadsheet_id=product_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
-        allowed_municipality_ids=allowed_municipality_ids,
+    return _shared_master_value(
+        ("saved_request_summaries", product_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_saved_product_correction_request_summaries(
+            spreadsheet_id=product_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+            allowed_municipality_ids=None,
+        )),
     )
 
 
@@ -357,19 +421,25 @@ def _load_backlog_teams(config):
     return fetch_backlog_project_teams(config)
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_backlog_custom_fields(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_backlog_custom_fields(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("backlog_custom_fields", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_backlog_custom_fields(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_backlog_status_values(config_spreadsheet_id: str, credentials_path_text: str):
-    return load_backlog_statuses(
-        spreadsheet_id=config_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return _shared_master_value(
+        ("backlog_status_values", config_spreadsheet_id, credentials_path_text),
+        lambda: tuple(load_backlog_statuses(
+            spreadsheet_id=config_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )),
     )
 
 
@@ -1726,6 +1796,7 @@ def render_product_request_tab(
         type="secondary",
         help="固定PCで取得した最新の商品情報と、フォーム・Backlog設定を読み直します。",
     ):
+        _clear_shared_master_values()
         for cached_loader in (
             _load_products,
             _load_form_fields,
@@ -1799,8 +1870,11 @@ def render_product_request_tab(
                 saved_summaries = _load_saved_request_summaries(
                     product_spreadsheet_id,
                     str(credentials_path),
-                    tuple(sorted(allowed_municipality_ids)),
                 )
+                saved_summaries = [
+                    summary for summary in saved_summaries
+                    if summary.municipality_id in allowed_municipality_ids
+                ]
         except Exception as error:
             saved_summaries = []
             st.warning("保存済み依頼の一覧を読み込めませんでした。IDの直接入力は利用できます。")
@@ -3821,6 +3895,7 @@ def render_product_request_tab(
                 or _custom_field_definition_signature(image_child_custom_fields)
                 != _custom_field_definition_signature(latest_image_child_custom_fields)
             ):
+                _clear_shared_master_values("backlog_custom_fields")
                 _load_backlog_custom_fields.clear()
                 raise ValueError(
                     "Backlogカスタム属性が更新されています。画面を再読み込みし、"
@@ -3915,6 +3990,7 @@ def render_product_request_tab(
                     request=request,
                     lines=correction_lines,
                 )
+                _clear_shared_master_values("saved_request_summaries")
                 _load_saved_request_summaries.clear()
             comparison_path = None
             generated_excel_label = (
@@ -4201,6 +4277,7 @@ def render_backlog_status_sync(
                 st.warning(f"{message} / 取得失敗：{len(sync_result.failed_request_ids)}件")
             else:
                 st.success(message)
+            _clear_shared_master_values("saved_request_summaries")
             _load_saved_request_summaries.clear()
         except Exception:
             st.error("Backlog状態を同期できませんでした。")
