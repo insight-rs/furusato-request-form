@@ -215,7 +215,7 @@ CORRECTION_TYPE_COLUMNS = {
     "商品説明文・容量変更": {"説明", "容量"},
 }
 BACKLOG_ONLY_PREFIX = "【Backlogのみ】"
-REQUEST_FORM_RUNTIME_VERSION = "2026-09-02.1"
+REQUEST_FORM_RUNTIME_VERSION = "2026-09-02.2"
 JST = ZoneInfo("Asia/Tokyo")
 SAME_DAY_CORRECTION_TYPES = {"在庫数変更", "表示・非表示切り替え"}
 
@@ -291,7 +291,8 @@ def _own_requester_keys(users, login_email: str) -> set[tuple[str, str]]:
 
 
 _MASTER_LOAD_LOCK = threading.RLock()
-_SHARED_MASTER_VALUES: dict[tuple[str, ...], Any] = {}
+_MASTER_CACHE_TTL_SECONDS = 15 * 60
+_SHARED_MASTER_VALUES: dict[tuple[str, ...], tuple[float, Any]] = {}
 
 
 def _shared_master_value(
@@ -301,14 +302,20 @@ def _shared_master_value(
     """Load a master once across concurrent sessions, retrying Sheets quota errors."""
 
     with _MASTER_LOAD_LOCK:
-        if cache_key in _SHARED_MASTER_VALUES:
-            return _SHARED_MASTER_VALUES[cache_key]
+        now = time.monotonic()
+        cached_entry = _SHARED_MASTER_VALUES.get(cache_key)
+        if cached_entry is not None and cached_entry[0] > now:
+            return cached_entry[1]
+        _SHARED_MASTER_VALUES.pop(cache_key, None)
 
         delay_seconds = 5
         for attempt in range(5):
             try:
                 value = loader()
-                _SHARED_MASTER_VALUES[cache_key] = value
+                _SHARED_MASTER_VALUES[cache_key] = (
+                    time.monotonic() + _MASTER_CACHE_TTL_SECONDS,
+                    value,
+                )
                 return value
             except Exception as error:
                 message = str(error)
@@ -333,7 +340,9 @@ def _clear_shared_master_values(*loader_names: str) -> None:
 
 # ProductReference is immutable. Keep the large, all-municipality master as one
 # shared resource instead of making a deserialized copy for every connected user.
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("products", product_spreadsheet_id, credentials_path_text),
@@ -346,7 +355,9 @@ def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_form_fields(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("form_fields", config_spreadsheet_id, credentials_path_text),
@@ -357,7 +368,9 @@ def _load_form_fields(config_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_policies(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("policies", config_spreadsheet_id, credentials_path_text),
@@ -368,7 +381,9 @@ def _load_policies(config_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_backlog_configs(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("backlog_configs", config_spreadsheet_id, credentials_path_text),
@@ -379,7 +394,9 @@ def _load_backlog_configs(config_spreadsheet_id: str, credentials_path_text: str
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_backlog_issue_types(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("backlog_issue_types", config_spreadsheet_id, credentials_path_text),
@@ -390,7 +407,9 @@ def _load_backlog_issue_types(config_spreadsheet_id: str, credentials_path_text:
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("backlog_users", config_spreadsheet_id, credentials_path_text),
@@ -401,7 +420,9 @@ def _load_backlog_users(config_spreadsheet_id: str, credentials_path_text: str):
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_saved_request_summaries(
     product_spreadsheet_id: str,
     credentials_path_text: str,
@@ -421,7 +442,9 @@ def _load_backlog_teams(config):
     return fetch_backlog_project_teams(config)
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_backlog_custom_fields(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("backlog_custom_fields", config_spreadsheet_id, credentials_path_text),
@@ -432,7 +455,9 @@ def _load_backlog_custom_fields(config_spreadsheet_id: str, credentials_path_tex
     )
 
 
-@st.cache_resource(max_entries=2, show_spinner=False)
+@st.cache_resource(
+    ttl=_MASTER_CACHE_TTL_SECONDS, max_entries=2, show_spinner=False
+)
 def _load_backlog_status_values(config_spreadsheet_id: str, credentials_path_text: str):
     return _shared_master_value(
         ("backlog_status_values", config_spreadsheet_id, credentials_path_text),
@@ -1790,27 +1815,7 @@ def render_product_request_tab(
         "商品ごとに、上段の現在値を確認して下段の変更後値を入力し、依頼を作成します。"
         "起票時には変更後データExcelと、必要に応じて追加ファイルをBacklogへ添付します。"
     )
-    if st.button(
-        "商品・自治体・設定マスタを再読み込み",
-        icon=":material/refresh:",
-        type="secondary",
-        help="固定PCで取得した最新の商品情報と、フォーム・Backlog設定を読み直します。",
-    ):
-        _clear_shared_master_values()
-        for cached_loader in (
-            _load_products,
-            _load_form_fields,
-            _load_policies,
-            _load_backlog_configs,
-            _load_backlog_issue_types,
-            _load_backlog_users,
-            _load_saved_request_summaries,
-            _load_backlog_teams,
-            _load_backlog_custom_fields,
-            _load_backlog_status_values,
-        ):
-            cached_loader.clear()
-        st.success("商品・自治体・設定マスタを再読み込みしました。")
+    st.caption("商品・自治体・設定マスタは15分ごとに自動で最新情報を取得します。")
 
     try:
         products = _load_products(product_spreadsheet_id, str(credentials_path))
