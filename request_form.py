@@ -215,7 +215,7 @@ CORRECTION_TYPE_COLUMNS = {
     "商品説明文・容量変更": {"説明", "容量"},
 }
 BACKLOG_ONLY_PREFIX = "【Backlogのみ】"
-REQUEST_FORM_RUNTIME_VERSION = "2026-09-02.2"
+REQUEST_FORM_RUNTIME_VERSION = "2026-09-02.3"
 JST = ZoneInfo("Asia/Tokyo")
 SAME_DAY_CORRECTION_TYPES = {"在庫数変更", "表示・非表示切り替え"}
 
@@ -466,6 +466,19 @@ def _load_backlog_status_values(config_spreadsheet_id: str, credentials_path_tex
             credentials_path=Path(credentials_path_text),
         )),
     )
+
+
+def _session_master_snapshot(
+    loader_name: str,
+    loader: Callable[..., Any],
+    *loader_args: Any,
+) -> Any:
+    """Pin one shared master version for the lifetime of the browser session."""
+
+    session_key = f"_request_master_snapshot_{loader_name}"
+    if session_key not in st.session_state:
+        st.session_state[session_key] = loader(*loader_args)
+    return st.session_state[session_key]
 
 
 def _product_label(product) -> str:
@@ -1815,14 +1828,27 @@ def render_product_request_tab(
         "商品ごとに、上段の現在値を確認して下段の変更後値を入力し、依頼を作成します。"
         "起票時には変更後データExcelと、必要に応じて追加ファイルをBacklogへ添付します。"
     )
-    st.caption("商品・自治体・設定マスタは15分ごとに自動で最新情報を取得します。")
+    st.caption(
+        "共有マスタは15分ごとに自動更新されます。"
+        "入力中の画面は開いた時点の内容を保持し、次回フォームを開いた際に最新版へ切り替わります。"
+    )
 
     try:
-        products = _load_products(product_spreadsheet_id, str(credentials_path))
-        form_fields = _load_form_fields(config_spreadsheet_id, str(credentials_path))
-        policies = _load_policies(config_spreadsheet_id, str(credentials_path))
-        all_backlog_users = _load_backlog_users(
-            config_spreadsheet_id, str(credentials_path)
+        products = _session_master_snapshot(
+            "products", _load_products,
+            product_spreadsheet_id, str(credentials_path),
+        )
+        form_fields = _session_master_snapshot(
+            "form_fields", _load_form_fields,
+            config_spreadsheet_id, str(credentials_path),
+        )
+        policies = _session_master_snapshot(
+            "policies", _load_policies,
+            config_spreadsheet_id, str(credentials_path),
+        )
+        all_backlog_users = _session_master_snapshot(
+            "backlog_users", _load_backlog_users,
+            config_spreadsheet_id, str(credentials_path),
         )
     except Exception as error:
         st.error("依頼フォーム用のマスタを読み込めませんでした。")
@@ -2139,10 +2165,14 @@ def render_product_request_tab(
 
     try:
         active_backlog_configs = backlog_configs_by_municipality_id(
-            _load_backlog_configs(config_spreadsheet_id, str(credentials_path))
+            _session_master_snapshot(
+                "backlog_configs", _load_backlog_configs,
+                config_spreadsheet_id, str(credentials_path),
+            )
         )
-        issue_types = _load_backlog_issue_types(
-            config_spreadsheet_id, str(credentials_path)
+        issue_types = _session_master_snapshot(
+            "backlog_issue_types", _load_backlog_issue_types,
+            config_spreadsheet_id, str(credentials_path),
         )
     except Exception:
         active_backlog_configs = {}
@@ -3571,7 +3601,10 @@ def render_product_request_tab(
     if create_backlog_issue and selected_issue_type is not None:
         try:
             target_project_users = get_project_users(
-                _load_backlog_users(config_spreadsheet_id, str(credentials_path)),
+                _session_master_snapshot(
+                    "backlog_users", _load_backlog_users,
+                    config_spreadsheet_id, str(credentials_path),
+                ),
                 target_municipality_id,
             )
         except Exception:
@@ -3661,8 +3694,9 @@ def render_product_request_tab(
             requester = st.text_input("依頼者", key="requester")
         try:
             target_custom_fields = get_applicable_custom_fields(
-                _load_backlog_custom_fields(
-                    config_spreadsheet_id, str(credentials_path)
+                _session_master_snapshot(
+                    "backlog_custom_fields", _load_backlog_custom_fields,
+                    config_spreadsheet_id, str(credentials_path),
                 ),
                 target_municipality_id,
                 selected_issue_type.name,
@@ -3816,8 +3850,9 @@ def render_product_request_tab(
                 )
             try:
                 image_child_custom_fields = get_applicable_custom_fields(
-                    _load_backlog_custom_fields(
-                        config_spreadsheet_id, str(credentials_path)
+                    _session_master_snapshot(
+                        "backlog_custom_fields", _load_backlog_custom_fields,
+                        config_spreadsheet_id, str(credentials_path),
                     ),
                     target_municipality_id,
                     target_image_issue_type.name,
@@ -4257,7 +4292,10 @@ def render_backlog_status_sync(
 
     try:
         active_backlog_configs = backlog_configs_by_municipality_id(
-            _load_backlog_configs(config_spreadsheet_id, str(credentials_path))
+            _session_master_snapshot(
+                "backlog_configs", _load_backlog_configs,
+                config_spreadsheet_id, str(credentials_path),
+            )
         )
     except Exception:
         return
@@ -4270,8 +4308,9 @@ def render_backlog_status_sync(
                     spreadsheet_id=product_spreadsheet_id,
                     credentials_path=credentials_path,
                     backlog_configs=active_backlog_configs,
-                    backlog_statuses=_load_backlog_status_values(
-                        config_spreadsheet_id, str(credentials_path)
+                    backlog_statuses=_session_master_snapshot(
+                        "backlog_status_values", _load_backlog_status_values,
+                        config_spreadsheet_id, str(credentials_path),
                     ),
                 )
             message = (
