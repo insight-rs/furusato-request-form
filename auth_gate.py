@@ -7,10 +7,18 @@ from dataclasses import dataclass
 import streamlit as st
 
 
+_LOGIN_PENDING_KEY = "_auth_login_pending"
+
+
 @dataclass(frozen=True)
 class AuthenticatedUser:
     email: str
     name: str
+
+
+def _queue_auth0_login() -> None:
+    """Queue one login redirect for the next Streamlit rerun."""
+    st.session_state[_LOGIN_PENDING_KEY] = True
 
 
 def require_authenticated_user() -> AuthenticatedUser:
@@ -22,8 +30,33 @@ def require_authenticated_user() -> AuthenticatedUser:
     if not st.user.is_logged_in:
         st.title("ふるさと納税業務支援")
         st.write("登録済みのメールアドレスと、ご自身で設定したパスワードでログインしてください。")
-        if st.button("メールアドレスでログイン", type="primary", icon=":material/login:", width="stretch"):
-            st.login("auth0")
+        st.info(
+            "ログイン画面は1つだけ開いてください。"
+            "ログイン中は「戻る」・画面の更新・別タブでのログインを行わないでください。",
+            icon=":material/info:",
+        )
+
+        # The callback runs at the start of the following rerun. A boolean
+        # queue makes repeated clicks idempotent and starts one redirect only.
+        if st.session_state.pop(_LOGIN_PENDING_KEY, False):
+            with st.spinner("ログイン画面を開いています…"):
+                st.login("auth0")
+            st.stop()
+
+        st.button(
+            "ログインを開始（1回だけ押してください）",
+            type="primary",
+            icon=":material/login:",
+            width="stretch",
+            on_click=_queue_auth0_login,
+        )
+        with st.expander("ログインエラーが表示された場合"):
+            st.markdown(
+                "1. Auth0のエラー画面を閉じる\n"
+                "2. フォームとログインの余分なタブを閉じる\n"
+                "3. フォームを1タブだけで開き直す\n"
+                "4. 上のログインボタンを1回だけ押す"
+            )
         st.stop()
     email = str(st.user.get("email", "")).strip().lower()
     if not email:
