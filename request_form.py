@@ -286,11 +286,16 @@ def _own_requester_keys(users, login_email: str) -> set[tuple[str, str]]:
     }
 
 
-@st.cache_data(max_entries=2, show_spinner=False)
+# ProductReference is an immutable dataclass. Keep the large, all-municipality
+# master as one shared resource instead of making a deserialized copy for every
+# connected user. This materially reduces memory use during company-wide tests.
+@st.cache_resource(max_entries=2, show_spinner=False)
 def _load_products(product_spreadsheet_id: str, credentials_path_text: str):
-    return load_product_references(
-        spreadsheet_id=product_spreadsheet_id,
-        credentials_path=Path(credentials_path_text),
+    return tuple(
+        load_product_references(
+            spreadsheet_id=product_spreadsheet_id,
+            credentials_path=Path(credentials_path_text),
+        )
     )
 
 
